@@ -24,6 +24,9 @@ dependencies:
 - mtl
 - bytestring
 - lrucache
+- memory
+- time
+- directory
 library:
   source-dirs: src
 

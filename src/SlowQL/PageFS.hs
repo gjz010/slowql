@@ -1,24 +1,37 @@
 module SlowQL.PageFS where
     import System.IO
     import Data.IORef
-    import qualified Data.ByteString as B
+    --import qualified Data.ByteString as B
     import qualified Data.Cache.LRU.IO as LRU
     import qualified Data.Cache.LRU as ILRU
+    import qualified Data.ByteArray as BA
+    import System.Directory
+    import Data.Word
     import Data.Maybe
-    cacheCapacity=60000
+    cacheCapacity=1
     pageSize=8192
-    data LRUCacheItem = LRUCacheItem {content :: !B.ByteString, dirty :: !Bool}
+    type DataChunk = BA.Bytes
+
+    data LRUCacheItem = LRUCacheItem {content :: !DataChunk, dirty :: !Bool}
     type LRUCache=LRU.AtomicLRU Int LRUCacheItem
+    
+
+    emptyChunk :: DataChunk
+    emptyChunk=BA.pack [0|a<-[1..pageSize]]
+
 
     createLRUCache :: IO LRUCache
     createLRUCache=LRU.newAtomicLRU (Just cacheCapacity)
 
-    createLRUItem :: B.ByteString -> LRUCacheItem
+    createLRUItem :: DataChunk -> LRUCacheItem
     createLRUItem bs=LRUCacheItem{content=bs, dirty=False}
 
-    createDirtyLRUItem :: B.ByteString -> LRUCacheItem
+    createDirtyLRUItem :: DataChunk -> LRUCacheItem
     createDirtyLRUItem bs=LRUCacheItem{content=bs, dirty=True}
     data DataFile = DataFile {file_handle :: !Handle, cache :: !LRUCache};
+    
+    exists :: String->IO Bool
+    exists=doesFileExist
     openDataFile :: String -> IO DataFile
     openDataFile filename= do
         handle <- openFile filename ReadWriteMode
@@ -35,18 +48,23 @@ module SlowQL.PageFS where
     ensureFilePage handle pid=do
         fsize<-hFileSize handle
         if toInteger(fsize)<toInteger((pid+1)*pageSize) then
-            writeFilePage handle pid $ B.pack [0|a<-[1..8192]]
+            writeFilePage handle pid emptyChunk
         else return ()
-    readFilePage :: Handle->Int->IO B.ByteString
+    hPut :: BA.ByteArrayAccess ba=>Handle->ba->IO()
+    hPut handle arr=BA.withByteArray arr (\p->hPutBuf handle p (BA.length arr))
+    hGet :: Handle->Int->IO DataChunk
+    hGet handle len=BA.alloc len (\p->do hGetBuf handle p len; return ())
+        
+    readFilePage :: Handle->Int->IO DataChunk
     readFilePage handle pid=do
         ensureFilePage handle pid
         hSeek handle AbsoluteSeek (toInteger(pid*pageSize))
-        B.hGet handle pageSize
-    writeFilePage :: Handle->Int->B.ByteString->IO()
+        hGet handle pageSize
+    writeFilePage :: Handle->Int->DataChunk->IO()
     writeFilePage handle pid buffer=do
         --putStrLn("Write!")
         hSeek handle AbsoluteSeek (toInteger(pid*pageSize))
-        B.hPut handle buffer
+        hPut handle buffer
     tryRemoveLast :: LRUCache->Handle->IO()
     tryRemoveLast c handle=do
         current_size<-LRU.size c
@@ -61,7 +79,7 @@ module SlowQL.PageFS where
                     else return ()
             else
                 return ()
-    readPage :: DataFile->Int->IO B.ByteString
+    readPage :: DataFile->Int->IO DataChunk
     readPage DataFile{file_handle=handle, cache=c} pid=do
         pair<-LRU.lookup pid c
         if  isJust pair
@@ -74,7 +92,7 @@ module SlowQL.PageFS where
                 LRU.insert pid (createLRUItem val) c
                 return val
 
-    writePage :: DataFile->Int->B.ByteString->IO()
+    writePage :: DataFile->Int->DataChunk->IO()
     writePage DataFile{file_handle=handle, cache=c} pid val=do --This is only a write-back.
         pair<-LRU.delete pid c
         if isJust pair
@@ -101,3 +119,37 @@ module SlowQL.PageFS where
 
             return imcache
         }
+    iterate :: DataChunk->Int->[Word8]
+    iterate chunk start
+        | start<0 = []
+        | toInteger start >=toInteger (BA.length chunk)= []
+        | otherwise = map (BA.index chunk) [start..BA.length chunk -1]
+    {-
+    class Iterator iter where
+        at :: iter->Word8
+        next :: iter->iter
+        done :: iter->Bool
+    data DataChunkIterator = DataChunkIterator DataChunk Int | DataChunkEnd
+
+    instance Iterator DataChunkIterator where
+        at (DataChunkIterator chunk i)=BA.index chunk i
+        next (DataChunkIterator chunk i)=iterateDataChunk chunk (i+1)
+        done (DataChunkIterator chunk i)=False
+        done DataChunkEnd =True
+    iterateDataChunk :: DataChunk->Int->DataChunkIterator
+    iterateDataChunk chunk i=if BA.length chunk<=i then DataChunkEnd else DataChunkIterator chunk i
+
+    data DataChunkIteratorUnsafe = DataChunkIteratorUnsafe DataChunk Int
+
+    instance Iterator DataChunkIteratorUnsafe where
+        at (DataChunkIteratorUnsafe chunk i)=BA.index chunk i
+        next (DataChunkIteratorUnsafe chunk i)=iterateDataChunkUnsafe chunk (i+1)
+        done _=False
+    iterateDataChunkUnsafe :: DataChunk->Int->DataChunkIteratorUnsafe
+    iterateDataChunkUnsafe=DataChunkIteratorUnsafe
+
+    iteratorToList :: Iterator iter=>iter->[Word8]
+    iteratorToList iter=if done iter then [] else at iter : iteratorToList ( next iter)
+    toList :: DataChunk->Int->[Word8]
+    toList a b=iteratorToList $ iterateDataChunk a b
+    -}
