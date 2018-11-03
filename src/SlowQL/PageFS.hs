@@ -18,19 +18,28 @@ module SlowQL.PageFS where
 
     createDirtyLRUItem :: B.ByteString -> LRUCacheItem
     createDirtyLRUItem bs=LRUCacheItem{content=bs, dirty=True}
-    data TableFile = TableFile {file_handle :: !Handle, cache :: !LRUCache};
-    openTableFile :: String -> IO TableFile
-    openTableFile filename= do
+    data DataFile = DataFile {file_handle :: !Handle, cache :: !LRUCache};
+    openDataFile :: String -> IO DataFile
+    openDataFile filename= do
         handle <- openFile filename ReadWriteMode
         lru<-createLRUCache
-        return TableFile {file_handle=handle,cache=lru}
-    closeTableFile :: TableFile -> IO()
-    closeTableFile TableFile{file_handle=handle}= do
+        return DataFile {file_handle=handle,cache=lru}
+    closeDataFile :: DataFile -> IO()
+    closeDataFile DataFile{file_handle=handle}= do
         -- Write Cache Back
         hClose handle
         return ()
+    getFileSize :: DataFile -> IO Integer
+    getFileSize DataFile{file_handle=handle}=hFileSize handle
+    ensureFilePage :: Handle->Int->IO()
+    ensureFilePage handle pid=do
+        fsize<-hFileSize handle
+        if toInteger(fsize)<toInteger((pid+1)*pageSize) then
+            writeFilePage handle pid $ B.pack [0|a<-[1..8192]]
+        else return ()
     readFilePage :: Handle->Int->IO B.ByteString
     readFilePage handle pid=do
+        ensureFilePage handle pid
         hSeek handle AbsoluteSeek (toInteger(pid*pageSize))
         B.hGet handle pageSize
     writeFilePage :: Handle->Int->B.ByteString->IO()
@@ -52,8 +61,8 @@ module SlowQL.PageFS where
                     else return ()
             else
                 return ()
-    readPage :: TableFile->Int->IO B.ByteString
-    readPage TableFile{file_handle=handle, cache=c} pid=do
+    readPage :: DataFile->Int->IO B.ByteString
+    readPage DataFile{file_handle=handle, cache=c} pid=do
         pair<-LRU.lookup pid c
         if  isJust pair
             then do
@@ -65,8 +74,8 @@ module SlowQL.PageFS where
                 LRU.insert pid (createLRUItem val) c
                 return val
 
-    writePage :: TableFile->Int->B.ByteString->IO()
-    writePage TableFile{file_handle=handle, cache=c} pid val=do --This is only a write-back.
+    writePage :: DataFile->Int->B.ByteString->IO()
+    writePage DataFile{file_handle=handle, cache=c} pid val=do --This is only a write-back.
         pair<-LRU.delete pid c
         if isJust pair
             then do --
@@ -77,8 +86,8 @@ module SlowQL.PageFS where
                 --putStrLn("Write!")
                 LRU.insert pid (createDirtyLRUItem val) c
                 return ()
-    writeBackAll :: TableFile->IO()
-    writeBackAll TableFile{file_handle=handle, cache=c}=
+    writeBackAll :: DataFile->IO()
+    writeBackAll DataFile{file_handle=handle, cache=c}=
         LRU.modifyAtomicLRU' f c
         where f= \ imcache-> do{
             mapM (\ (pid, LRUCacheItem {content=val, dirty=dirt})->do{

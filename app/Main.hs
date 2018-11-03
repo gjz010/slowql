@@ -12,11 +12,21 @@ module Main where
 
     test_pagefs :: IO()
     test_pagefs = do
-        table <- SlowQL.PageFS.openTableFile "table.tbl"
-        let arr1=B.pack [48|a<-[1..8192]]
+        table <- SlowQL.PageFS.openDataFile "table.tbl"
+        let arr1=B.pack [50|a<-[1..8192]]
         SlowQL.PageFS.writePage table 0 arr1
-        let arr2=B.pack [49|a<-[1..8192]]
-        SlowQL.PageFS.writePage table 10 arr2
+        let arr2=B.pack [52|a<-[1..8192]]
+        size<-SlowQL.PageFS.getFileSize table
+        print size
+        SlowQL.PageFS.writePage table 11 arr2
+        size<-SlowQL.PageFS.getFileSize table
+        print size
         SlowQL.PageFS.writeBackAll table
-        SlowQL.PageFS.closeTableFile table
+        size<-SlowQL.PageFS.getFileSize table
+        print size
+        page<-SlowQL.PageFS.readPage table 100
+        size<-SlowQL.PageFS.getFileSize table
+        print size
+        print $ B.length page
+        SlowQL.PageFS.closeDataFile table
         putStrLn "Done"
