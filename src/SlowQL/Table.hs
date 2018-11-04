@@ -10,18 +10,21 @@ module SlowQL.Table where
     import Data.Char
     import Data.Bits
     import Data.List.Split
+    import Control.Monad
     type Domains=[TParam]
     type Record=[TValue]
     tableFileMagicNumber :: String
     tableFileMagicNumber="SLOWQLTB"
     
-    type Bitmap=[[Bool]]
+    newtype Bitmap=Bitmap {bitmapContent::[[Bool]]}
 
+    instance Show Bitmap where
+        show a = "<Bitmap>"
     createBitmap :: [FS.DataChunk]->Bitmap
-    createBitmap chunks=map (\chunk->concatMap (expandWord8) (FS.iterate chunk 0) ) chunks
+    createBitmap chunks=Bitmap $ map (\chunk->concatMap (expandWord8) (FS.iterate chunk 0) ) chunks
 
     storeBitmap :: Bitmap->[FS.DataChunk]
-    storeBitmap bitmaps=map (\bitmap->BA.pack $ map (buildWord8) (chunksOf 8 bitmap)) bitmaps
+    storeBitmap bitmaps=map (\bitmap->BA.pack $ map (buildWord8) (chunksOf 8 bitmap)) $ bitmapContent bitmaps
 
     data Table=Table {name :: String, domains:: Domains, file :: FS.DataFile, blockCount :: Int, 
     accumulator::Int, recordSize::Int, recordPerPage::Int, freeChunks :: Bitmap} deriving (Show)
@@ -32,6 +35,8 @@ module SlowQL.Table where
     metaDomain :: Domains
     metaDomain=[TVarCharParam (defaultGeneral "name") 64, TVarCharParam (defaultGeneral "type") 16, TBoolParam (defaultGeneral "nullable"), TIntParam (defaultGeneral "maxLength") 0]
     
+    preDomain :: Domains
+    preDomain=[TBoolParam (defaultGeneral "_deleted"), TIntParam (defaultGeneral "_rid") 10]
     parseDomain :: Record->TParam
     parseDomain [ValChar (Just name), ValChar (Just ptype), ValBool (Just nullable), ValInt (Just maxLength)]=
         let g=TGeneralParam name nullable in
@@ -92,9 +97,10 @@ module SlowQL.Table where
         FS.readPage file 0
         FS.readPage file 1
         FS.readPage file 2
+        FS.readPage file 3
         let recordSize=sum (map paramSize domains)+6
         let recordPerPage=quot FS.pageSize recordSize;
-        let table=Table name domains file 0 0 recordSize recordPerPage (createBitmap [FS.emptyChunk, FS.emptyChunk])
+        let table=Table name domains file 1 0 recordSize recordPerPage (createBitmap [FS.emptyChunk, FS.emptyChunk])
         writeTableMetadata table
         FS.writeBackAll file
         FS.closeDataFile file
@@ -110,4 +116,35 @@ module SlowQL.Table where
             Left $ map (\(Left err) ->err) $ filter isLeft fields
         else Right $ concatMap (\(Right l)->l) fields
 
+
+    data Cursor = Cursor Table Int [Record]| EOT
+    createPageCursor :: Table->Int->Int->IO Cursor
+    createPageCursor table page offset=do
+        if(page>=blockCount table) then 
+            return EOT
+        else do
+            pagedata<-FS.readPage (file table) (3+page)
+            let (records,_)=rzip [readRecord (preDomain++(domains table))|i<-[1..(recordPerPage table)]] [] (FS.iterate pagedata (offset*(recordSize table)) )
+            return $ Cursor table page records
+
+    nextCursor :: Cursor->IO (Cursor, Record)
+    nextCursor (Cursor table a (x:xs))= do
+        if(length xs==0) then do
+            newcursor<-createPageCursor table (a+1) 0
+            return (newcursor, x)
+        else
+            return (Cursor table a xs, x)
+
+    foldrQuery :: (Record->b->b)->b->Table->IO b
+    foldrQuery f acc table=do
+        cursor<-createPageCursor table 0 0
+        _foldrQuery f acc cursor
+    _foldrQuery :: (Record->b->b)->b->Cursor->IO b
+    _foldrQuery _ acc EOT=return acc
+    _foldrQuery f acc cursor=do
+                (newcursor, record)<-nextCursor cursor
+                rc<-_foldrQuery f acc newcursor
+                return $ f record rc
+
+    
     

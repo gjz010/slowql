@@ -24,7 +24,7 @@ module Main where
         SlowQL.PageFS.writeBackAll table
         size<-SlowQL.PageFS.getFileSize table
         print size
-        page<-SlowQL.PageFS.readPage table 100
+        page<-SlowQL.PageFS.readPageLazy table 100
         size<-SlowQL.PageFS.getFileSize table
         print size
         print $ BA.length page

@@ -9,6 +9,7 @@ module SlowQL.PageFS where
     import System.Directory
     import Data.Word
     import Data.Maybe
+    import System.IO.Unsafe
     cacheCapacity=1
     pageSize=8192
     type DataChunk = BA.Bytes
@@ -83,6 +84,8 @@ module SlowQL.PageFS where
                     else return ()
             else
                 return ()
+    readPageLazy :: DataFile->Int->IO DataChunk
+    readPageLazy a b= unsafeInterleaveIO $ readPage a b
     readPage :: DataFile->Int->IO DataChunk
     readPage DataFile{file_handle=handle, cache=c} pid=do
         pair<-LRU.lookup pid c
