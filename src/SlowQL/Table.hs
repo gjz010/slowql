@@ -11,6 +11,7 @@ module SlowQL.Table where
     import Data.Bits
     import Data.List.Split
     import Control.Monad
+    import Data.Maybe
     type Domains=[TParam]
     type Record=[TValue]
     tableFileMagicNumber :: String
@@ -26,8 +27,13 @@ module SlowQL.Table where
     storeBitmap :: Bitmap->[FS.DataChunk]
     storeBitmap bitmaps=map (\bitmap->BA.pack $ map (buildWord8) (chunksOf 8 bitmap)) $ bitmapContent bitmaps
 
-    data Table=Table {name :: String, domains:: Domains, file :: FS.DataFile, blockCount :: Int, 
-    accumulator::Int, recordSize::Int, recordPerPage::Int, freeChunks :: Bitmap} deriving (Show)
+    findFirstSlot :: [[Bool]]->Int->Int->Int->Maybe (Int, Int, Int)
+    findFirstSlot ((False:xs):cs) index x y=Just (index, x, y)
+    findFirstSlot ((True:xs):cs) index x y=findFirstSlot (xs:cs) (index+1) x (y+1)
+    findFirstSlot ([]:cs) index x y= findFirstSlot cs index  (x+1) 0
+    findFirstSlot [] index _ _=Nothing
+
+    data Table=Table {name :: String, domains:: Domains, file :: FS.DataFile, blockCount :: Int, accumulator::Int, recordSize::Int, recordPerPage::Int, freeChunks :: Bitmap} deriving (Show)
     
     headerDomain :: Domains
     headerDomain=[TVarCharParam (defaultGeneral "table_name") 256, TIntParam (defaultGeneral "accumulator") 0,
@@ -123,7 +129,7 @@ module SlowQL.Table where
         if(page>=blockCount table) then 
             return EOT
         else do
-            pagedata<-FS.readPage (file table) (3+page)
+            pagedata<-FS.readPageLazy (file table) (3+page) --Lazy Evaluation!
             let (records,_)=rzip [readRecord (preDomain++(domains table))|i<-[1..(recordPerPage table)]] [] (FS.iterate pagedata (offset*(recordSize table)) )
             return $ Cursor table page records
 
@@ -146,5 +152,30 @@ module SlowQL.Table where
                 rc<-_foldrQuery f acc newcursor
                 return $ f record rc
 
+
+    updateMatrix :: [[a]] -> a -> (Int, Int) -> [[a]]
+    updateMatrix m x (r,c) =
+        take r m ++
+        [take c (m !! r) ++ [x] ++ drop (c + 1) (m !! r)] ++
+        drop (r + 1) m
+
     
-    
+    createRecordValue :: Domains->Record
+    createRecordValue=map createValue
+    modifyRawRecord :: Table->Int->Int->(Record->Record)->IO Record
+    modifyRawRecord (Table name domains file blockCount accumulator recordSize recordPerPage freeChunks) pn en f=do
+        return (f $ createRecordValue domains)
+    insert :: Table->Record->IO Table
+    insert table record = do
+        let (Table name domains file blockCount accumulator recordSize recordPerPage freeChunks)=table
+        let Just (page, r, c)=findFirstSlot (bitmapContent freeChunks) 3 0 0
+        page_data<-FS.readPage file page
+        let new_ri=accumulator+1
+        modifyRawRecord table r c (const ([ValBool (Just True), ValInt (Just new_ri)]++record))
+        let new_mat=Bitmap $ updateMatrix (bitmapContent freeChunks) True (r, c)
+        return $ Table name domains file blockCount (accumulator+1) recordSize recordPerPage (if c==recordPerPage-1 then new_mat else freeChunks)
+    remove :: Table->(Int, Int)->IO ()
+    remove table (r, c)=do 
+        let (Table name domains file blockCount accumulator recordSize recordPerPage freeChunks)=table
+        modifyRawRecord table r c (const ([ValBool (Just False), ValInt (Just 0)]++(createRecordValue domains)))
+        return ()

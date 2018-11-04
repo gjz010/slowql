@@ -28,6 +28,13 @@ module SlowQL.DataType where
     paramSize TDateParam{}=1+8
     paramSize TBoolParam{}=1
 
+    createValue :: TParam->TValue
+    createValue TVarCharParam{max_length=max_length}=ValChar(Just "")
+    createValue TIntParam{}=ValInt(Just 0)
+    createValue TFloatParam{}=ValFloat(Just 0.0)
+    createValue TDateParam{}=ValDate(Just (UTCTime (ModifiedJulianDay 0) (secondsToDiffTime 0)))
+    createValue TBoolParam{}=ValBool(Just False)
+
     readField :: TParam->[Word8]->(TValue, [Word8])
     readField TVarCharParam{max_length=maxlen} iter=let (isnull, r1)=readBool iter
                                     in if isnull then (ValChar Nothing, r1)
