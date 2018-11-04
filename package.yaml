@@ -27,12 +27,16 @@ dependencies:
 - memory
 - time
 - directory
+- binary
+- data-binary-ieee754
+- utf8-string
+- split
 library:
   source-dirs: src
 
 executables:
   slowql-exe:
-    main:                main.hs
+    main:                Main.hs
     source-dirs:         app
     ghc-options:
     - -threaded

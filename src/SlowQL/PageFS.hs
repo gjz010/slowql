@@ -5,6 +5,7 @@ module SlowQL.PageFS where
     import qualified Data.Cache.LRU.IO as LRU
     import qualified Data.Cache.LRU as ILRU
     import qualified Data.ByteArray as BA
+    import qualified Data.ByteString.Lazy as B
     import System.Directory
     import Data.Word
     import Data.Maybe
@@ -12,7 +13,8 @@ module SlowQL.PageFS where
     pageSize=8192
     type DataChunk = BA.Bytes
 
-    data LRUCacheItem = LRUCacheItem {content :: !DataChunk, dirty :: !Bool}
+    
+    data LRUCacheItem = LRUCacheItem {content :: !DataChunk, dirty :: !Bool} deriving (Show)
     type LRUCache=LRU.AtomicLRU Int LRUCacheItem
     
 
@@ -28,7 +30,9 @@ module SlowQL.PageFS where
 
     createDirtyLRUItem :: DataChunk -> LRUCacheItem
     createDirtyLRUItem bs=LRUCacheItem{content=bs, dirty=True}
-    data DataFile = DataFile {file_handle :: !Handle, cache :: !LRUCache};
+    data DataFile = DataFile {file_handle :: !Handle, cache :: !LRUCache} 
+    instance Show DataFile where
+        show a="<DataFile>"
     
     exists :: String->IO Bool
     exists=doesFileExist
@@ -104,6 +108,7 @@ module SlowQL.PageFS where
                 --putStrLn("Write!")
                 LRU.insert pid (createDirtyLRUItem val) c
                 return ()
+    
     writeBackAll :: DataFile->IO()
     writeBackAll DataFile{file_handle=handle, cache=c}=
         LRU.modifyAtomicLRU' f c
@@ -119,11 +124,17 @@ module SlowQL.PageFS where
 
             return imcache
         }
-    iterate :: DataChunk->Int->[Word8]
+    iterate :: DataChunk->Int->[Word8] 
     iterate chunk start
         | start<0 = []
         | toInteger start >=toInteger (BA.length chunk)= []
         | otherwise = map (BA.index chunk) [start..BA.length chunk -1]
+    
+    compact :: B.ByteString->Maybe DataChunk
+    compact bs=let old_chunk=BA.pack (B.unpack bs)
+               in if BA.length old_chunk>pageSize then Nothing
+               else Just $ BA.concat [old_chunk, BA.zero (pageSize-(BA.length old_chunk))::BA.Bytes]
+
     {-
     class Iterator iter where
         at :: iter->Word8
