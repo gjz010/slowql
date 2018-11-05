@@ -2,6 +2,16 @@
 
 RDBMS written in Haskell for fun (and for suffering).
 
+## 构建运行
+
+SlowQL使用Haskell编写。要运行测试用例，你需要安装[stack](https://docs.haskellstack.org/en/stable/install_and_upgrade/)，然后执行
+
+```
+stack test # 目前只支持测试用例
+```
+
+或者运行现成的Binary。
+
 ## 模块划分
 
 SlowQL主要划分为文件系统、记录管理、索引管理、系统管理、查询解析等模块。

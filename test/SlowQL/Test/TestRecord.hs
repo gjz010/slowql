@@ -37,6 +37,8 @@ module SlowQL.Test.TestRecord where
     
     testTable = do
         putStrLn "Testing Record Manager"
+        putStrLn "Doing cleanup job"
+        removeIfExists "slowql_test.tbl.dat"
         createTable 
         (Just table)<-T.openTable "slowql_test"
         (e1, t1)<-fmap e2m $ T.insert table [ValChar $ Just "gjz010", ValInt $ Just 60]
@@ -55,8 +57,7 @@ module SlowQL.Test.TestRecord where
         T.closeTable table'
         --print everything 
 
-        putStrLn "Doing cleanup job"
-        removeIfExists "slowql_test.tbl.dat"
+
         return ()
     
     createTable = do
