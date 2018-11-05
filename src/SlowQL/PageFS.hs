@@ -10,7 +10,7 @@ module SlowQL.PageFS where
     import Data.Word
     import Data.Maybe
     import System.IO.Unsafe
-    cacheCapacity=1
+    cacheCapacity=256
     pageSize=8192
     type DataChunk = BA.Bytes
 
@@ -43,9 +43,10 @@ module SlowQL.PageFS where
         lru<-createLRUCache
         return DataFile {file_handle=handle,cache=lru}
     closeDataFile :: DataFile -> IO()
-    closeDataFile DataFile{file_handle=handle}= do
+    closeDataFile file= do
         -- Write Cache Back
-        hClose handle
+        writeBackAll file
+        hClose $file_handle file
         return ()
     getFileSize :: DataFile -> IO Integer
     getFileSize DataFile{file_handle=handle}=hFileSize handle

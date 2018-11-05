@@ -47,7 +47,7 @@ executables:
 
 tests:
   slowql-test:
-    main:                test.hs
+    main:                Main.hs
     source-dirs:         test
     ghc-options:
     - -threaded

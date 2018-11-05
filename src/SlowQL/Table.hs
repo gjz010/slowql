@@ -12,6 +12,7 @@ module SlowQL.Table where
     import Data.List.Split
     import Control.Monad
     import Data.Maybe
+    import Data.List
     type Domains=[TParam]
     type Record=[TValue]
     tableFileMagicNumber :: String
@@ -72,7 +73,7 @@ module SlowQL.Table where
             let iter=FS.iterate chunk 0
             let (magic, header)=splitAt 8 iter
             if map (chr.fromIntegral) magic == tableFileMagicNumber then do
-                print $ readRecord headerDomain header
+                -- print $ readRecord headerDomain header
                 let ([ValChar (Just table_name), ValInt (Just accumulator), ValInt (Just blockCount), ValInt (Just domainCount), ValInt (Just recordSize), ValInt (Just recordPerPage)], domains) = readRecord headerDomain header
                 let (domainList, freemap)=rzip (replicate domainCount (readRecord metaDomain)) [] domains
                 p1<-FS.readPage file 1
@@ -85,13 +86,19 @@ module SlowQL.Table where
 
     writeTableMetadata :: Table->IO()
     writeTableMetadata Table{SlowQL.Table.name=name, domains=domains, file=file, blockCount=blockCount, accumulator=accumulator, recordSize=recordSize, recordPerPage=recordPerPage, freeChunks=freeChunks}=do
+        
         let metaDomain=concat $ map writeParam domains
         -- For a boolean and an index
         let recordSize=sum (map paramSize domains)+6
         let recordPerPage=quot FS.pageSize recordSize;
+        --print ([ValChar (Just name), ValInt (Just accumulator), ValInt (Just blockCount), ValInt (Just (length domains)), ValInt (Just recordSize), ValInt (Just recordPerPage)])
         let Right header=writeRecord headerDomain [ValChar (Just name), ValInt (Just accumulator), ValInt (Just blockCount), 
                                                     ValInt (Just (length domains)), ValInt (Just recordSize), ValInt (Just recordPerPage)]
+        --print header
+        let (fields, _)=readRecord headerDomain header
+        --print fields
         let Just chunk=FS.compact $ B.concat [ UB.fromString tableFileMagicNumber, B.pack header, B.pack metaDomain]
+        --print $ B.concat [ UB.fromString tableFileMagicNumber, B.pack header, B.pack metaDomain]
         FS.writePage file 0 chunk
         let [b1, b2]=storeBitmap freeChunks
         FS.writePage file 1 b1
@@ -112,7 +119,9 @@ module SlowQL.Table where
         FS.closeDataFile file
         return ()
     closeTable :: Table->IO()
-    closeTable Table{file=f} =FS.closeDataFile f 
+    closeTable t =do
+        writeTableMetadata t
+        FS.closeDataFile $ file t 
     readRecord :: Domains->[Word8]->([TValue],[Word8])
     readRecord domains l=rzip (map readField domains) [] l
 
@@ -123,14 +132,16 @@ module SlowQL.Table where
         else Right $ concatMap (\(Right l)->l) fields
 
 
-    data Cursor = Cursor Table Int [Record]| EOT
+    data Cursor = Cursor Table Int [Record]| EOT deriving (Show)
     createPageCursor :: Table->Int->Int->IO Cursor
     createPageCursor table page offset=do
         if(page>=blockCount table) then 
             return EOT
         else do
             pagedata<-FS.readPageLazy (file table) (3+page) --Lazy Evaluation!
+            
             let (records,_)=rzip [readRecord (preDomain++(domains table))|i<-[1..(recordPerPage table)]] [] (FS.iterate pagedata (offset*(recordSize table)) )
+            -- print (BA.length pagedata, length records, head records)
             return $ Cursor table page records
 
     nextCursor :: Cursor->IO (Cursor, Record)
@@ -141,18 +152,24 @@ module SlowQL.Table where
         else
             return (Cursor table a xs, x)
 
-    foldrQuery :: (Record->b->b)->b->Table->IO b
-    foldrQuery f acc table=do
+    rawfoldrQuery :: (Record->b->b)->b->Table->IO b
+    rawfoldrQuery f acc table=do
         cursor<-createPageCursor table 0 0
-        _foldrQuery f acc cursor
-    _foldrQuery :: (Record->b->b)->b->Cursor->IO b
-    _foldrQuery _ acc EOT=return acc
-    _foldrQuery f acc cursor=do
+        _rawfoldrQuery f acc cursor
+    _rawfoldrQuery :: (Record->b->b)->b->Cursor->IO b
+    _rawfoldrQuery _ acc EOT=return acc
+    _rawfoldrQuery f acc cursor=do
                 (newcursor, record)<-nextCursor cursor
-                rc<-_foldrQuery f acc newcursor
+                rc<-_rawfoldrQuery f acc newcursor
                 return $ f record rc
 
-
+    foldrQuery :: (Record->b->b)->b->Table->IO b
+    foldrQuery f acc table=
+        let g= \record b->if (let (ValBool (Just val))=head record in val) then
+                f (tail (tail record)) b
+            else 
+                b
+        in rawfoldrQuery g acc table
     updateMatrix :: [[a]] -> a -> (Int, Int) -> [[a]]
     updateMatrix m x (r,c) =
         take r m ++
@@ -162,20 +179,51 @@ module SlowQL.Table where
     
     createRecordValue :: Domains->Record
     createRecordValue=map createValue
-    modifyRawRecord :: Table->Int->Int->(Record->Record)->IO Record
-    modifyRawRecord (Table name domains file blockCount accumulator recordSize recordPerPage freeChunks) pn en f=do
-        return (f $ createRecordValue domains)
-    insert :: Table->Record->IO Table
+    
+    modifyRawRecord :: Table->Int->Int->(Record->Record)->IO (Either [DataWriteError] Record)
+    modifyRawRecord table pn en f=do
+        let (Table name domains file blockCount accumulator recordSize recordPerPage freeChunks)=table
+        block <- FS.readPage file pn
+        let (pre, currnxt)=BA.splitAt (en*recordSize) block
+        let (curr, nxt)=BA.splitAt (recordSize) currnxt
+       
+        let (old_record, _)=readRecord (preDomain ++ domains) (BA.unpack curr)
+        let result=writeRecord (preDomain ++ domains) (f old_record)
+        if isLeft result then do
+            let (Left error)=result
+            return $ Left error
+        else do
+            let (Right ncurr)=result
+            -- print (pn, ncurr)
+            FS.writePage file pn $ BA.concat [pre, BA.pack ncurr, nxt]
+            return $ Right (f old_record)
+    findFirstEmptyItem :: Table->Int->IO Int
+    findFirstEmptyItem table pn=do
+        block <- FS.readPage (file table) pn
+        let (Just index)=findIndex not (map (\el->((BA.index block (el*recordSize table))/=0)) [0..((recordPerPage table)-1)])
+        return index
+    insert :: Table->Record->IO (Either [DataWriteError] Table)
     insert table record = do
         let (Table name domains file blockCount accumulator recordSize recordPerPage freeChunks)=table
         let Just (page, r, c)=findFirstSlot (bitmapContent freeChunks) 3 0 0
-        page_data<-FS.readPage file page
+        -- print (table, page)
+        en<-findFirstEmptyItem table page
         let new_ri=accumulator+1
-        modifyRawRecord table r c (const ([ValBool (Just True), ValInt (Just new_ri)]++record))
-        let new_mat=Bitmap $ updateMatrix (bitmapContent freeChunks) True (r, c)
-        return $ Table name domains file blockCount (accumulator+1) recordSize recordPerPage (if c==recordPerPage-1 then new_mat else freeChunks)
-    remove :: Table->(Int, Int)->IO ()
+        -- print (record, page, r, c, en)
+        result<-modifyRawRecord table page en (const ([ValBool (Just True), ValInt (Just accumulator)]++record))
+        if isLeft result then do
+            let (Left error)=result
+            return $ Left error
+        else do
+            let new_mat=Bitmap $ updateMatrix (bitmapContent freeChunks) True (r, c)
+            return $ Right $ Table name domains file (if en==recordPerPage-1 then blockCount+1 else blockCount) new_ri recordSize recordPerPage (if en==recordPerPage-1 then new_mat else freeChunks)
+    remove :: Table->(Int, Int)->IO (Maybe [DataWriteError])
     remove table (r, c)=do 
         let (Table name domains file blockCount accumulator recordSize recordPerPage freeChunks)=table
-        modifyRawRecord table r c (const ([ValBool (Just False), ValInt (Just 0)]++(createRecordValue domains)))
-        return ()
+        result<-modifyRawRecord table (r+3) c (const ([ValBool (Just False), ValInt (Just 0)]++(createRecordValue domains)))
+        if isLeft result then do 
+            let (Left error)=result
+            return $ Just error
+        else return Nothing
+
+    

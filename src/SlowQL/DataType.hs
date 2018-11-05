@@ -8,7 +8,7 @@ module SlowQL.DataType where
     import qualified Data.ByteString.Lazy.UTF8 as UB
     import qualified Data.ByteString.Lazy as B
     data DataWriteError = DataWriteError ErrorType TParam TValue deriving (Show)
-    data ErrorType = NullValue | ForeignKeyViolated | StringTooLong deriving (Show, Enum)
+    data ErrorType = NullValue | ForeignKeyViolated | StringTooLong | TypeMismatch deriving (Show, Enum)
     
     data TGeneralParam=TGeneralParam {name :: String, nullable :: Bool} deriving(Show)
     defaultGeneral name=TGeneralParam {name=name, nullable=True}
@@ -78,6 +78,7 @@ module SlowQL.DataType where
     doWriteField TIntParam{} (ValInt (Just val) ) throw=Right $ B.unpack $ B.concat[B.singleton 0, B.pack $ writeInt32 $ fromIntegral val]
     doWriteField TFloatParam{} (ValFloat (Just val) ) throw=Right $ B.unpack $ B.concat[B.singleton 0, B.pack $ writeFloat val]
     doWriteField TBoolParam{} (ValBool (Just val) ) throw=Right $ B.unpack $ B.concat[B.singleton $ if val then 2 else 0]
+    doWriteField a b throw=throw TypeMismatch
     --doWriteField TFloatParam{} (ValFloat (Just val) ) throw=Right $ B.unpack $ B.concat[B.singleton 0, B.pack $ writeFloat val]
     --doWriteField TIntParam{general=TGeneralParam {nullable=nullable}} (ValInt Nothing)=
     

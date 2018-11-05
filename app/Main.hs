@@ -4,12 +4,12 @@ module Main where
     import qualified Data.ByteArray as BA
     main :: IO()
     main = do 
-        putStrLn "ABC"
-        putStrLn "DEF"
+        putStrLn "SlowDB Functional RDBMS"
         -- table <- SlowQL.PageFS.openTableFile "table.tbl"
         test_pagefs
         return ()
 
+    
     test_pagefs :: IO()
     test_pagefs = do
         table <- SlowQL.PageFS.openDataFile "table.tbl"
