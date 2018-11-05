@@ -163,13 +163,16 @@ module SlowQL.Table where
                 rc<-_rawfoldrQuery f acc newcursor
                 return $ f record rc
 
-    foldrQuery :: (Record->b->b)->b->Table->IO b
-    foldrQuery f acc table=
-        let g= \record b->if (let (ValBool (Just val))=head record in val) then
-                f (tail (tail record)) b
-            else 
-                b
-        in rawfoldrQuery g acc table
+    class RecordSource t where
+        foldrQuery :: (Record->b->b)->b->t->IO b
+    instance RecordSource Table where
+        --foldrQuery :: (Record->b->b)->b->Table->IO b
+        foldrQuery f acc table=
+            let g= \record b->if (let (ValBool (Just val))=head record in val) then
+                    f (tail (tail record)) b
+                else 
+                    b
+            in rawfoldrQuery g acc table
     updateMatrix :: [[a]] -> a -> (Int, Int) -> [[a]]
     updateMatrix m x (r,c) =
         take r m ++
@@ -177,8 +180,11 @@ module SlowQL.Table where
         drop (r + 1) m
 
     
+    
     createRecordValue :: Domains->Record
     createRecordValue=map createValue
+    
+ 
     
     modifyRawRecord :: Table->Int->Int->(Record->Record)->IO (Either [DataWriteError] Record)
     modifyRawRecord table pn en f=do
