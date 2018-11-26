@@ -3,6 +3,7 @@ module SlowQL.DataType where
     import Data.Maybe
     import Data.Either
     import Data.Time
+    import Data.Ord
     import qualified SlowQL.PageFS as PageFS
     import SlowQL.ListReader
     import qualified Data.ByteString.Lazy.UTF8 as UB
@@ -19,7 +20,8 @@ module SlowQL.DataType where
                  | TBoolParam {general ::TGeneralParam}
                  deriving (Show)
 
-    data TValue = ValChar (Maybe String) | ValInt (Maybe Int) | ValFloat (Maybe Float) | ValDate (Maybe UTCTime) |ValBool (Maybe Bool) deriving (Show, Eq)
+    data TValue = ValChar (Maybe String) | ValInt (Maybe Int) | ValFloat (Maybe Float) | ValDate (Maybe UTCTime) |ValBool (Maybe Bool) deriving (Show, Eq, Ord)
+
 
     paramSize :: TParam->Int
     paramSize TVarCharParam{max_length=max_length}=1+4+max_length

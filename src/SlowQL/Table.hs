@@ -13,6 +13,9 @@ module SlowQL.Table where
     import Control.Monad
     import Data.Maybe
     import Data.List
+    --import qualified Data.Set as Set
+    import qualified Data.HashMap.Strict as HashMap
+    import System.IO.Unsafe (unsafeInterleaveIO)
     type Domains=[TParam]
     type Record=[TValue]
     tableFileMagicNumber :: String
@@ -158,21 +161,29 @@ module SlowQL.Table where
         _rawfoldrQuery f acc cursor
     _rawfoldrQuery :: (Record->b->b)->b->Cursor->IO b
     _rawfoldrQuery _ acc EOT=return acc
-    _rawfoldrQuery f acc cursor=do
+    _rawfoldrQuery f acc cursor=unsafeInterleaveIO $ do
                 (newcursor, record)<-nextCursor cursor
-                rc<-_rawfoldrQuery f acc newcursor
+                rc<- _rawfoldrQuery f acc newcursor
                 return $ f record rc
 
     class RecordSource t where
         foldrQuery :: (Record->b->b)->b->t->IO b
-    instance RecordSource Table where
-        --foldrQuery :: (Record->b->b)->b->Table->IO b
-        foldrQuery f acc table=
+    
+    instance RecordSource Cursor where
+        foldrQuery f acc cursor=
             let g= \record b->if (let (ValBool (Just val))=head record in val) then
                     f (tail (tail record)) b
                 else 
                     b
-            in rawfoldrQuery g acc table
+            in _rawfoldrQuery g acc cursor
+    instance RecordSource Table where
+        --foldrQuery :: (Record->b->b)->b->Table->IO b
+        foldrQuery f acc table=do
+            cursor<-createPageCursor table 0 0
+            foldrQuery f acc  cursor
+
+
+
     updateMatrix :: [[a]] -> a -> (Int, Int) -> [[a]]
     updateMatrix m x (r,c) =
         take r m ++
@@ -232,4 +243,29 @@ module SlowQL.Table where
             return $ Just error
         else return Nothing
 
+    getDomainByName :: Table->String->TParam
+    getDomainByName table name= let domain_map=HashMap.fromList $ map (\v->(SlowQL.DataType.name $ general v, v)) (domains table) 
+                                    (Just param)=HashMap.lookup name domain_map
+                                    in param
     
+    extractKey :: Domains->[String]->[Word8]->(Domains, Record)
+    extractKey domains names rawrecord=
+        let all_domains=preDomain++domains
+            (fields, _)=readRecord all_domains rawrecord
+            dv_pair=zip (map (SlowQL.DataType.name . general) all_domains) (zip all_domains fields)
+            dv_map=HashMap.fromList dv_pair
+        in unzip $ map (\n->let (Just v)=HashMap.lookup n dv_map in v) names
+    extractKeyword :: Domains->[String]->[Word8]->[Word8]
+    extractKeyword a b w=
+        let (d, r)=extractKey a b w
+            Right re=writeRecord d r
+        in re
+
+    compareKeys :: Table->[(String, Bool)]->[Word8]->[Word8]->Ordering
+    compareKeys table name_dir a b=
+        let (names, dirs)=unzip name_dir
+            domains=map (getDomainByName table) names
+            (a', _)=readRecord domains a
+            (b', _)=readRecord domains b
+            (a'', b'')=unzip $ zipWith3 (\v1 v2 asc->if asc then (v2, v1) else (v1, v2)) a' b' dirs
+        in compare a'' b''

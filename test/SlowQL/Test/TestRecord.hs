@@ -1,5 +1,6 @@
 module SlowQL.Test.TestRecord where
     import qualified SlowQL.Table as T
+    import qualified SlowQL.TableIndex as I
     import SlowQL.DataType
     import Data.Maybe
     import Data.Either
@@ -56,7 +57,7 @@ module SlowQL.Test.TestRecord where
         print $ length everything
         T.closeTable table'
         --print everything 
-
+        createIndex
 
         return ()
     
@@ -73,3 +74,24 @@ module SlowQL.Test.TestRecord where
             putStrLn "Create Failed!"
             return ()
             
+
+    --bulkInsertIndex index values=
+    createRawData id=[ValBool (Just True), ValInt (Just id), ValChar $ Just ("user_"++(show id)), ValInt $ Just id]
+    insertIndexRaw index l=case l of
+        
+        []-> return index
+        (x:xs)-> do
+            -- putStrLn $ show x
+            new_index<-I.insert index $ createRawData x
+            insertIndexRaw new_index xs
+    createIndex = do
+        putStrLn "Creating Index"
+        Just table<-T.openTable "slowql_test"
+
+        index<-I.createIndex table "index_test" [("score", False)]
+        putStrLn $ show index
+        new_index<-insertIndexRaw index ([1..500])
+        putStrLn $ show new_index
+
+        I.closeIndex index
+        

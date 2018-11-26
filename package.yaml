@@ -31,6 +31,9 @@ dependencies:
 - data-binary-ieee754
 - utf8-string
 - split
+- unordered-containers
+- bitarray
+- containers
 library:
   source-dirs: src
 
