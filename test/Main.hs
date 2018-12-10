@@ -1,6 +1,6 @@
 module Main where
-    import qualified SlowQL.Test.TestRecord
+    import qualified SlowQL.Test.LinearTableTest
     main :: IO()
     main = do
         putStrLn "SlowQL Test Started"
-        SlowQL.Test.TestRecord.testTable
+        --SlowQL.Test.LinearTableTest.tesst

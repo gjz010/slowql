@@ -6,32 +6,77 @@ module SlowQL.PageFS where
     import qualified Data.Cache.LRU as ILRU
     import qualified Data.ByteArray as BA
     import qualified Data.ByteString.Lazy as B
+    import qualified Data.ByteString as BS
+    import qualified Foreign.C.String as CStr
     import System.Directory
     import Data.Word
     import Data.Maybe
     import System.IO.Unsafe
+
+    import qualified Foreign.Marshal.Alloc as FAlloc
+    import qualified Foreign.Marshal.Array as FArray
+    import qualified Foreign.Storable as FStore
+    import qualified Foreign.Marshal.Utils as FUtils
+    import Foreign.Ptr
+    data Page=Page {raw :: Ptr Word8, rdirty :: IORef Bool}
+    instance Show Page where
+        show p="<Page>"
+    
+    withPage :: (Ptr Word8->IO (a, Bool))->Page->IO a
+    withPage f page=do
+        (a, modified)<-f $ raw page
+        modifyIORef' (rdirty page) (||modified)
+        return a
+    modifyPage :: (Ptr Word8->IO a)->Page->IO a
+    modifyPage m=let f= \p->do
+                        ret<-m p
+                        return (ret, True)
+                      in withPage f
+    inspectPage :: (Ptr Word8->IO a)->Page->IO a
+    inspectPage m=let f= \p->do
+                        ret<-m p
+                        return (ret, False)
+                    in withPage f
+    dirty :: Page->IO Bool
+    dirty=readIORef . rdirty
+    
+    emptyPage :: Int->Bool->IO Page
+    emptyPage size dty=do
+        d<-newIORef dty
+        r<-FAlloc.callocBytes size
+        return $ Page r d
+    freePage :: Page->IO()
+    freePage=(FAlloc.free).raw
+
+    sliceBS :: Int->Ptr a->IO BS.ByteString
+    sliceBS size p=BS.packCStringLen (castPtr p, size)
+    
+    sliceBSOff :: Int->Int->Ptr a->IO BS.ByteString
+    sliceBSOff offset size p=sliceBS size (p `plusPtr` offset)
+
+    writeBSOff :: Int->BS.ByteString->Ptr a->IO ()
+    writeBSOff offset bs p=BS.useAsCStringLen bs (uncurry $ FUtils.copyBytes (p `plusPtr` offset)) 
+                                                            
     cacheCapacity=256
     pageSize=8192
-    type DataChunk = BA.Bytes
-
+    -- type DataChunk = BA.Bytes
+    --type DataChunk=BS.ByteString
     
-    data LRUCacheItem = LRUCacheItem {content :: !DataChunk, dirty :: !Bool} deriving (Show)
-    type LRUCache=LRU.AtomicLRU Int LRUCacheItem
-    
+    --data LRUCacheItem = LRUCacheItem {content :: !DataChunk, dirty :: !Bool} deriving (Show)
+    --type LRUCache=LRU.AtomicLRU Int LRUCacheItem
+    type LRUCache=LRU.AtomicLRU Int Page
 
-    emptyChunk :: DataChunk
-    emptyChunk=BA.pack [0|a<-[1..pageSize]]
-
-
+    --emptyChunk :: DataChunk
+    --emptyChunk=BS.pack [0|a<-[1..pageSize]]
     createLRUCache :: IO LRUCache
     createLRUCache=LRU.newAtomicLRU (Just cacheCapacity)
 
-    createLRUItem :: DataChunk -> LRUCacheItem
-    createLRUItem bs=LRUCacheItem{content=bs, dirty=False}
+    --createLRUItem :: DataChunk -> LRUCacheItem
+    --createLRUItem bs=LRUCacheItem{content=bs, dirty=False}
 
-    createDirtyLRUItem :: DataChunk -> LRUCacheItem
-    createDirtyLRUItem bs=LRUCacheItem{content=bs, dirty=True}
-    data DataFile = DataFile {file_handle :: !Handle, cache :: !LRUCache} 
+    --createDirtyLRUItem :: DataChunk -> LRUCacheItem
+    --createDirtyLRUItem bs=LRUCacheItem{content=bs, dirty=True}
+    data DataFile = DataFile {file_handle :: Handle, cache :: LRUCache} 
     instance Show DataFile where
         show a="<DataFile>"
     
@@ -50,56 +95,92 @@ module SlowQL.PageFS where
         return ()
     getFileSize :: DataFile -> IO Integer
     getFileSize DataFile{file_handle=handle}=hFileSize handle
-    ensureFilePage :: Handle->Int->IO()
+    {-ensureFilePage :: Handle->Int->IO Page
     ensureFilePage handle pid=do
         fsize<-hFileSize handle
         if toInteger(fsize)<toInteger((pid+1)*pageSize) then
             writeFilePage handle pid emptyChunk
         else return ()
-    hPut :: BA.ByteArrayAccess ba=>Handle->ba->IO()
-    hPut handle arr=BA.withByteArray arr (\p->hPutBuf handle p (BA.length arr))
+    hPut :: Handle->DataChunk->IO()
+    hPut handle arr=BS.hPut handle arr
     hGet :: Handle->Int->IO DataChunk
-    hGet handle len=BA.alloc len (\p->do hGetBuf handle p len; return ())
-        
-    readFilePage :: Handle->Int->IO DataChunk
+    hGet handle len=BS.hGet handle len
+       -} 
+    readFilePage :: Handle->Int->IO Page
     readFilePage handle pid=do
-        ensureFilePage handle pid
-        hSeek handle AbsoluteSeek (toInteger(pid*pageSize))
-        hGet handle pageSize
-    writeFilePage :: Handle->Int->DataChunk->IO()
-    writeFilePage handle pid buffer=do
+        fsize<-hFileSize handle
+        if toInteger(fsize)<toInteger((pid+1)*pageSize) then
+            emptyPage pageSize True
+        else do
+            hSeek handle AbsoluteSeek (toInteger(pid*pageSize))
+            page<-emptyPage pageSize False
+            inspectPage (\ptr->do
+                    hGetBuf handle ptr pageSize
+                ) page
+            return page
+    writeFilePage' :: Bool->Handle->Int->Page->IO()
+    writeFilePage' dofree handle pid page=do
         --putStrLn("Write!")
         hSeek handle AbsoluteSeek (toInteger(pid*pageSize))
-        hPut handle buffer
+        inspectPage (\ptr->do
+                hPutBuf handle ptr pageSize
+            ) page
+        if dofree then freePage page else return ()
+    writeFilePage :: Handle->Int->Page->IO()
+    writeFilePage=writeFilePage' False
     tryRemoveLast :: LRUCache->Handle->IO()
     tryRemoveLast c handle=do
         current_size<-LRU.size c
         if toInteger(current_size)==cacheCapacity
             then do
                 write_op<-LRU.pop c
-                let Just(write_pid, LRUCacheItem {content=cont, dirty=dirt})=write_op
+                let Just(write_pid, page)=write_op
+                dirt<-dirty page
                 if(dirt)
-                    then do
-                        writeFilePage handle write_pid cont
-                        return ()
+                    then writeFilePage' True handle write_pid page
                     else return ()
             else
                 return ()
-    readPageLazy :: DataFile->Int->IO DataChunk
-    readPageLazy a b= unsafeInterleaveIO $ readPage a b
-    readPage :: DataFile->Int->IO DataChunk
+    --Now the page is mutable and everyone is happy.
+    getPage :: DataFile->Int->IO Page
+    getPage DataFile{file_handle=handle, cache=c} pid=do
+        page<-LRU.lookup pid c
+        if isJust page then let Just jp=page in return jp
+        else do
+            newpage<-readFilePage handle pid
+            tryRemoveLast c handle
+            LRU.insert pid newpage c
+            return newpage
+    writeBackAll' :: Bool->DataFile->IO()
+    writeBackAll' dofree DataFile{file_handle=handle, cache=c}=do
+        l<-LRU.toList c
+        let f (pid, page)= do
+                dirt<-dirty page
+                if dirt then do
+                    --putStrLn $ "Writing back a page! "++(show pid)
+                    writeFilePage' dofree handle pid page
+                    writeIORef (rdirty page) False
+                else return ()--putStrLn $"Not dirty "++(show pid)
+        mapM_ f l
+    writeBackAll :: DataFile->IO()
+    writeBackAll=writeBackAll' False
+    --readPageLazy :: DataFile->Int->IO DataChunk
+    --readPageLazy a b= unsafeInterleaveIO $ readPage a b
+    {-
+    readPage :: DataFile->Int->IO Ptr
     readPage DataFile{file_handle=handle, cache=c} pid=do
         pair<-LRU.lookup pid c
         if  isJust pair
             then do
-                let Just LRUCacheItem{content=val} = pair
-                return val
+                let Just Page{raw=ptr} = pair
+                return ptr
             else do
                 val<-readFilePage handle pid
                 tryRemoveLast c handle
                 LRU.insert pid (createLRUItem val) c
                 return val
-
+    -}
+    {-
     writePage :: DataFile->Int->DataChunk->IO()
     writePage DataFile{file_handle=handle, cache=c} pid val=do --This is only a write-back.
         pair<-LRU.delete pid c
@@ -112,33 +193,20 @@ module SlowQL.PageFS where
                 --putStrLn("Write!")
                 LRU.insert pid (createDirtyLRUItem val) c
                 return ()
-    
-    writeBackAll :: DataFile->IO()
-    writeBackAll DataFile{file_handle=handle, cache=c}=
-        LRU.modifyAtomicLRU' f c
-        where f= \ imcache-> do{
-            mapM (\ (pid, LRUCacheItem {content=val, dirty=dirt})->do{
-                if dirt
-                    then do
-                        writeFilePage handle pid val
-                        return ()
-                    else do
-                        return ()
-            }) (ILRU.toList imcache);
+    -}
 
-            return imcache
-        }
+    {-
     iterate :: DataChunk->Int->[Word8] 
-    iterate chunk start
-        | start<0 = []
-        | toInteger start >=toInteger (BA.length chunk)= []
-        | otherwise = map (BA.index chunk) [start..BA.length chunk -1]
-    
+    iterate chunk start=BS.unpack $ BS.drop start chunk
+--        | start<0 = []
+--        | toInteger start >=toInteger (BA.length chunk)= []
+--        | otherwise = map (BA.index chunk) [start..BA.length chunk -1]
     compact :: B.ByteString->Maybe DataChunk
-    compact bs=let old_chunk=BA.pack (B.unpack bs)
-               in if BA.length old_chunk>pageSize then Nothing
-               else Just $ BA.concat [old_chunk, BA.zero (pageSize-(BA.length old_chunk))::BA.Bytes]
-
+    compact bs=if (fromIntegral $ B.length bs)<=pageSize then Just $ B.toStrict $ B.concat [bs, B.fromStrict $ BS.take (pageSize-(fromIntegral $ B.length bs)) emptyChunk] else Nothing
+                --let old_chunk=BA.pack (B.unpack bs)
+               --in if BA.length old_chunk>pageSize then Nothing
+               --else Just $ BA.concat [old_chunk, BA.zero (pageSize-(BA.length old_chunk))::BA.Bytes]
+    -}
     {-
     class Iterator iter where
         at :: iter->Word8
