@@ -28,7 +28,7 @@ module SlowQL.Record.DataType where
                  | TBoolParam {general ::TGeneralParam}
                  deriving (Show)
 
-    data TValue = ValChar (Maybe ByteString) | ValInt (Maybe Int) | ValFloat (Maybe Float) | ValDate (Maybe UTCTime) |ValBool (Maybe Bool) deriving (Show, Eq, Ord)
+    data TValue = ValChar (Maybe ByteString) | ValInt (Maybe Int) | ValFloat (Maybe Float) | ValDate (Maybe UTCTime) |ValBool (Maybe Bool) | ValNull deriving (Show, Eq, Ord)
     
 
     newtype Domains=Domains {domains :: Array Int TParam} deriving (Show)

@@ -18,6 +18,9 @@ module SlowQL.Utils where
     readInt p o=do
         v<-peekElemOff (castPtr (p `plusPtr` o) :: Ptr Word32) 0
         return (fromIntegral v)
-
+    writeByte :: Ptr a->Int->Word8->IO()
+    writeByte p o v=pokeElemOff (castPtr (p `plusPtr`o) :: Ptr Word8) 0 v
+    readByte :: Ptr a->Int->IO Word8
+    readByte p o=peekElemOff (castPtr (p `plusPtr` o) :: Ptr Word8) 0
     runPut' :: Put->BS.ByteString
     runPut' =BSL.toStrict . runPut
