@@ -50,9 +50,15 @@ import Data.Maybe
     asc {TokenAsc}
     and {TokenAnd}
     foreign {TokenForeign}
-    references{TokenReferences}
-
-
+    references {TokenReferences}
+    '=' {TokenEq}
+    '<>' {TokenNeq}
+    '<=' {TokenLeq}
+    '>=' {TokenGeq}
+    '<' {TokenLt}
+    '>' {TokenGt}
+    '.' {TokenDot}
+    '*' {TokenStar}
 %%
 SQL : SQLStatement ';' {$1}
 SQLStatement    : CreateDatabase    {$1}
@@ -62,11 +68,18 @@ SQLStatement    : CreateDatabase    {$1}
                 | UseDatabase {$1}
                 | ShowDatabases {$1}
                 | ShowDatabase {$1}
-
+                | SelectStmt {$1}
+                | UpdateStmt {$1}
+                | InsertStmt {$1}
+                | DeleteStmt {$1}
+                | CreateIndex {$1}
+                | DropIndex {$1}
+                | ShowTables {$1}
+                | DescribeTable {$1}
 CreateDatabase : create database IDENTIFIER {CreateDatabase $3}
 DropDatabase   : drop database IDENTIFIER {DropDatabase $3}
-CreateTable    : create table IDENTIFIER '('  DomainList ')' {CreateTable $3 $5 $6}
-DomainList     : DomainDesc {$1 (DomainDescription [] Nothing)}
+CreateTable    : create table IDENTIFIER '('  DomainList ')' {CreateTable $3 $5}
+DomainList     : DomainDesc {$1 (TableDescription [] Nothing [])}
                | DomainDesc ',' DomainList {$1 $3}
 DomainDesc     : IDENTIFIER char MaxLength Nullable    {appendParam $ DT.TVarCharParam (DT.TGeneralParam (BC.pack $1) $4) $3}
                | IDENTIFIER int MaxLength Nullable     {appendParam $ DT.TIntParam (DT.TGeneralParam (BC.pack $1) $4) $3}
@@ -82,18 +95,47 @@ DropTable      : drop table IDENTIFIER {DropTable $3}
 UseDatabase    : use database IDENTIFIER {UseDatabase $3}
 ShowDatabases  : show databases {ShowDatabases}
 ShowDatabase   : show database {ShowDatabase}
-ShowTables : show tables
-DescribeTable : desc IDENTIFIER {DescribeTable desc}
-InsertStmt: insert into IDENTIFIER values InsertValues {InsertStmt $3 $5}
+ShowTables : show tables {ShowTables}
+DescribeTable  : desc IDENTIFIER   {DescribeTable $2}
+InsertStmt: insert into IDENTIFIER values '(' ValueList ')' {InsertStmt $3 $6}
 ValueList: Value {[$1]}
-                  |   Value ',' ValueList [$1:$3]
-Value: TokenString {let TokenString str=$1 in DT.ValChar (Just str)}
-            | TokenInt {let TokenInt i=$1 in DT.ValInt (Just i)}
-            | TokenNull {DT.ValNull}
-SelectStmt: select Selector from IDENTIFIER WhereClause {SelectStmt $2 }
-UpdateStmt: update IDENTIFIER set SetClause where WhereClause
-DeleteStmt: delete from IDENTIFIER where WhereClause
-
+       |   Value ',' ValueList {$1:$3}
+Value: STRING {DT.ValChar (Just $ BC.pack $1)}
+            | INT {DT.ValInt (Just $1)}
+            | null {DT.ValNull}
+TableList: IDENTIFIER {[$1]}
+         | IDENTIFIER ',' TableList {$1:$3}
+IsNull : null  {True}
+       | not null {False}
+WhereOp: Column Op Expr {WhereOp $1 $2 $3}
+       | Column is IsNull {WhereIsNull $3}
+WhereClause:{- empty -} {WhereAny}
+            |where WhereOp {$2}
+            |where WhereOp and WhereClause {WhereAnd $2 $4}
+            
+Column: IDENTIFIER {LocalCol $1}
+      | IDENTIFIER '.' IDENTIFIER {ForeignCol $1 $3}
+Expr  : Column {ExprC $1}
+      | Value {ExprV $1}
+Op  : '=' {OpEq}
+    | '<>' {OpNeq}
+    | '<=' {OpLeq}
+    | '>=' {OpGeq}
+    | '<' {OpLt}
+    | '>' {OpGt}
+ColumnList: Column {[$1]}
+          | Column ',' ColumnList {$1:$3}
+IdtList: IDENTIFIER {[$1]}
+       | IDENTIFIER ',' IdtList {$1:$3} 
+SelectStmt: select ColumnList from TableList WhereClause {SelectStmt $2 $4 $5}
+          | select '*' from TableList WhereClause {SelectAllStmt $4 $5}
+UpdateStmt: update IDENTIFIER set '(' SetClause ')' WhereClause {UpdateStmt $2 $5 $7}
+DeleteStmt: delete from IDENTIFIER WhereClause {DeleteStmt $3 $4}
+SetClause: Assignment {[$1]}
+         | Assignment ',' SetClause {$1:$3}
+Assignment: IDENTIFIER '=' Value {($1, $3)}
+CreateIndex: create index IDENTIFIER IdtList {CreateIndex $3 $4}
+DropIndex: drop index IDENTIFIER IdtList {CreateIndex $3 $4}
 {
 parseError :: [Token]->a
 parseError _=error "Error while parsing SQL statement."
@@ -107,13 +149,19 @@ data Token
     |TokenIdentifier String|TokenString String|TokenInteger Int|TokenDatabase|TokenTable|TokenIndex|TokenOB|TokenCB|TokenUse|TokenShow|TokenDatabases
     |TokenInt|TokenChar|TokenFloat|TokenDate|TokenPrimary|TokenKey|TokenNot|TokenNull
     |TokenTables|TokenInto|TokenValues|TokenSet|TokenIs|TokenDesc|TokenAsc|TokenAnd|TokenForeign|TokenReferences
+    |TokenDot|TokenEq|TokenNeq|TokenLeq|TokenGeq|TokenLt|TokenGt|TokenStar
     deriving(Show)
-type ForeignRef=(String, String, String)
-data TableDescription = TableDescription {params :: [DT.TParam], primary :: Maybe String, foreign: [ForeignRef]} 
+data Op=OpEq|OpNeq|OpLeq|OpGeq|OpLt|OpGt deriving (Show)
+data Column=LocalCol String|ForeignCol String String deriving (Show)
+data Expr=ExprV DT.TValue | ExprC Column deriving (Show)
+data WhereClause=WhereOp Column Op Expr|WhereIsNull Bool | WhereAnd WhereClause WhereClause | WhereAny deriving (Show)
+
+type ForeignRef=(Column, Column) 
+data TableDescription = TableDescription {params :: [DT.TParam], primary :: Maybe String, fkey:: [ForeignRef]} deriving (Show)
 appendParam :: DT.TParam->TableDescription->TableDescription
 appendParam par d=d {params=par:(params d)}
 appendForeign :: String->String->String->TableDescription->TableDescription
-appendForeign fld->tbl col d=d{foreign=(fld, tbl, col):(foreign d)}
+appendForeign fld tbl col d=d{fkey=(LocalCol fld, ForeignCol tbl col):(fkey d)}
 setPrimary :: String->TableDescription->TableDescription
 setPrimary pri d=if isNothing (primary d) then d{primary=Just pri} else error "Duplicate PrimaryKey!"
 data SQLStatement
@@ -124,6 +172,15 @@ data SQLStatement
     | UseDatabase String
     | ShowDatabases
     | ShowDatabase
+    | SelectStmt [Column] [String] WhereClause
+    | SelectAllStmt [String] WhereClause
+    | UpdateStmt String [(String, DT.TValue)] WhereClause
+    | DeleteStmt String WhereClause
+    | InsertStmt String [DT.TValue]
+    | CreateIndex String [String]
+    | DropIndex String String
+    | ShowTables
+    | DescribeTable String
     deriving (Show)
 
 tokenize :: String->[Token]
@@ -136,18 +193,18 @@ tokenize (',':cs)=TokenComma:tokenize cs
 tokenize (';':cs)=TokenSemicolon:tokenize cs
 tokenize ('(':cs)=TokenOB:tokenize cs
 tokenize (')':cs)=TokenCB:tokenize cs
-tokenize ('\'':cs)=let (a, b)=span (/='\'') cs in (TokenString $ init a):tokenize ((last a):b)
+tokenize ('\'':cs)=let (a, b)=span (/='\'') cs in (TokenString a):tokenize (tail b)
+tokenize ('=':cs)=TokenEq:tokenize cs
+tokenize ('<':'=':cs)=TokenLeq:tokenize cs
+tokenize ('>':'=':cs)=TokenGeq:tokenize cs
+tokenize ('<':'>':cs)=TokenNeq:tokenize cs
+tokenize ('<':cs)=TokenLt:tokenize cs
+tokenize ('>':cs)=TokenGt:tokenize cs
+tokenize ('.':cs)=TokenDot:tokenize cs
+tokenize ('*':cs)=TokenStar:tokenize cs
 readVar cs=
     let (token, rest)=span isText cs
         sym=case token of
-
-                
-                
-                
-                
-                
-                
-                
                 "database"->TokenDatabase
                 "databases"->TokenDatabases
                 "table"->TokenTable
@@ -180,8 +237,6 @@ readVar cs=
                 "float"->TokenFloat
                 "foreign"->TokenForeign
                 "references"->TokenReferences
-
-
                 
                 
 

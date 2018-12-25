@@ -45,8 +45,9 @@ module SlowQL.Data.BTreeTable where
         c<-readInt ptr 5
         d<-readInt ptr 9
         return $ case a of
-            headerLeaf ->LeafHeader b c d
-            headerNode->NodeHeader b c d
+            1 ->NodeHeader b c d
+            0 ->LeafHeader b c d
+            
     isLeaf :: BTreeHeader->Bool
     isLeaf LeafHeader{}=True
     isLeaf NodeHeader{}=False
