@@ -85,7 +85,7 @@ DomainDesc     : IDENTIFIER char MaxLength Nullable    {appendParam $ DT.TVarCha
                | IDENTIFIER int MaxLength Nullable     {appendParam $ DT.TIntParam (DT.TGeneralParam (BC.pack $1) $4) $3}
                | IDENTIFIER float Nullable     {appendParam $ DT.TFloatParam (DT.TGeneralParam (BC.pack $1) $3)}
                | IDENTIFIER date Nullable      {appendParam $ DT.TFloatParam (DT.TGeneralParam (BC.pack $1) $3)}
-               | primary key IDENTIFIER {setPrimary $3}
+               | primary key '(' IdtList ')' {setPrimary $4}
                | foreign key '(' IDENTIFIER ')' references IDENTIFIER '(' IDENTIFIER ')' {appendForeign $4 $7 $9}
 MaxLength      : {- empty -} {255}
                | '(' INT ')' {$2}
@@ -108,10 +108,11 @@ TableList: IDENTIFIER {[$1]}
 IsNull : null  {True}
        | not null {False}
 WhereOp: Column Op Expr {WhereOp $1 $2 $3}
-       | Column is IsNull {WhereIsNull $3}
-WhereClause:{- empty -} {WhereAny}
-            |where WhereOp {$2}
-            |where WhereOp and WhereClause {WhereAnd $2 $4}
+       | Column is IsNull {WhereIsNull $1 $3}
+WhereWhereClause : {- empty -} {WhereAny}
+                | where WhereClause {$2}
+WhereClause : WhereOp {$1}
+            |WhereOp and WhereClause {WhereAnd $1 $3}
             
 Column: IDENTIFIER {LocalCol $1}
       | IDENTIFIER '.' IDENTIFIER {ForeignCol $1 $3}
@@ -127,8 +128,8 @@ ColumnList: Column {[$1]}
           | Column ',' ColumnList {$1:$3}
 IdtList: IDENTIFIER {[$1]}
        | IDENTIFIER ',' IdtList {$1:$3} 
-SelectStmt: select ColumnList from TableList WhereClause {SelectStmt $2 $4 $5}
-          | select '*' from TableList WhereClause {SelectAllStmt $4 $5}
+SelectStmt: select ColumnList from TableList WhereWhereClause {SelectStmt $2 $4 $5}
+          | select '*' from TableList WhereWhereClause {SelectAllStmt $4 $5}
 UpdateStmt: update IDENTIFIER set '(' SetClause ')' WhereClause {UpdateStmt $2 $5 $7}
 DeleteStmt: delete from IDENTIFIER WhereClause {DeleteStmt $3 $4}
 SetClause: Assignment {[$1]}
@@ -154,15 +155,15 @@ data Token
 data Op=OpEq|OpNeq|OpLeq|OpGeq|OpLt|OpGt deriving (Show)
 data Column=LocalCol String|ForeignCol String String deriving (Show)
 data Expr=ExprV DT.TValue | ExprC Column deriving (Show)
-data WhereClause=WhereOp Column Op Expr|WhereIsNull Bool | WhereAnd WhereClause WhereClause | WhereAny deriving (Show)
+data WhereClause=WhereOp Column Op Expr|WhereIsNull Column Bool | WhereAnd WhereClause WhereClause | WhereAny deriving (Show)
 
-type ForeignRef=(Column, Column) 
-data TableDescription = TableDescription {params :: [DT.TParam], primary :: Maybe String, fkey:: [ForeignRef]} deriving (Show)
+type ForeignRef=(String, (String, String)) 
+data TableDescription = TableDescription {params :: [DT.TParam], primary :: Maybe [String], fkey:: [ForeignRef]} deriving (Show)
 appendParam :: DT.TParam->TableDescription->TableDescription
 appendParam par d=d {params=par:(params d)}
 appendForeign :: String->String->String->TableDescription->TableDescription
-appendForeign fld tbl col d=d{fkey=(LocalCol fld, ForeignCol tbl col):(fkey d)}
-setPrimary :: String->TableDescription->TableDescription
+appendForeign fld tbl col d=d{fkey=(fld, (tbl, col)):(fkey d)}
+setPrimary :: [String]->TableDescription->TableDescription
 setPrimary pri d=if isNothing (primary d) then d{primary=Just pri} else error "Duplicate PrimaryKey!"
 data SQLStatement
     = CreateDatabase String
@@ -244,5 +245,8 @@ readVar cs=
     in sym:tokenize rest
 readNum cs=TokenInteger (read num):tokenize rest
         where (num, rest)=span isDigit cs
+
+
+        
 parseSQL=parseTokens . tokenize
 }

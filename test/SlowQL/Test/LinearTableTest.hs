@@ -4,6 +4,7 @@ module SlowQL.Test.LinearTableTest where
     import qualified SlowQL.Data.LinearTable as T
     import qualified Data.ByteString as BS
     import Conduit
+    import qualified SlowQL.Conduit.Combinator as CB
     type ByteString=BS.ByteString
     filename="test-lineartable.tmp"
     test :: IO()
@@ -13,11 +14,16 @@ module SlowQL.Test.LinearTableTest where
         table<-T.open filename
         print table
         T.printStats table
+        T.insert "YajueSenpai" table
+        T.insert "11451481893" table
+        T.insert "DeepFantasy" table
+        T.printStats table
+        let take3=(T.enumerate table).| takeC 3
+        l<-runConduit $ (CB.cartesian take3 take3 ) .| filterC (\(a,b)->a/=b) .|sinkList
+        print l
+        T.close table
 
-        mapM_  (const $ T.insert "YajueSenpai" table) [1..1000000]
+        -- mapM_  (const $ T.insert "YajueSenpai" table) [1..1000000]
         --T.update (\x->return (if x== "yajue" then Nothing else (Just "wslnm"))) table
         --T.insert "hahah" table
         --T.insert "yajuu" table
-        T.printStats table
-        runConduit $ (T.enumerate table).| takeC 100 .| printC
-        T.close table

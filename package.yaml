@@ -38,6 +38,7 @@ dependencies:
 - conduit
 - aeson
 - array
+- vector
 library:
   source-dirs: src
 

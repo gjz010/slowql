@@ -3,4 +3,4 @@ module Main where
     main :: IO()
     main = do
         putStrLn "SlowQL Test Started"
-        --SlowQL.Test.LinearTableTest.tesst
+        SlowQL.Test.LinearTableTest.test

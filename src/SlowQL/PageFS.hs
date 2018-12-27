@@ -56,7 +56,13 @@ module SlowQL.PageFS where
 
     writeBSOff :: Int->BS.ByteString->Ptr a->IO ()
     writeBSOff offset bs p=BS.useAsCStringLen bs (uncurry $ FUtils.copyBytes (p `plusPtr` offset)) 
-                                                            
+                                                
+    writeLBSOff :: Int->B.ByteString->Ptr a->IO ()
+    writeLBSOff offset lbs p=(B.foldlChunks go (return offset) lbs) >>= const (return ())
+                                where go ofs chunk=do
+                                            o<-ofs
+                                            writeBSOff o chunk p
+                                            return ((BS.length chunk)+o)
     cacheCapacity=256
     pageSize=8192
     -- type DataChunk = BA.Bytes

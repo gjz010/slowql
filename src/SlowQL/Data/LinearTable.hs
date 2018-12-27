@@ -11,8 +11,10 @@ module SlowQL.Data.LinearTable where
     import qualified SlowQL.PageFS as FS
     import qualified Data.ByteString as BS 
     import Data.List.Split
+    import Data.Bits
     import Data.Maybe
     import Data.Word
+    import Data.Binary.Get as Get
     import Control.Monad.IO.Class
     import SlowQL.Utils
     type ByteString=BS.ByteString
@@ -177,17 +179,18 @@ module SlowQL.Data.LinearTable where
                             return [] 
                         else
                             do
-                                remain_items<-fetchItems (n-1) (p `plusPtr` (rs+4))
-                                header<-peekElemOff (castPtr p :: Ptr Word32) 0
-                                if (fromIntegral header)==tagNotEmpty then
-                                    do
-                                        bs<-FS.sliceBSOff 4 rs p 
-                                        return (bs:remain_items)
-                                else return remain_items
+                                chunk<-FS.sliceBSOff 0 ((rs+4)*n) p
+                                let items=map (\x->(BS.splitAt 4) $ (rangeBS (x*(rs+4)) (rs+4)) chunk) [0..(n-1)]
+                                let get_header hdr=fromIntegral((fromIntegral $ BS.index hdr 0:: Word32) 
+                                                .|. ((fromIntegral $ BS.index hdr 1:: Word32) `shiftL` 8)
+                                                .|. ((fromIntegral $ BS.index hdr 2:: Word32) `shiftL` 16)
+                                                .|. ((fromIntegral $ BS.index hdr 3:: Word32) `shiftL` 24))
+                                let filtered_items=filter (\(h, t)->get_header h==tagNotEmpty) items
+                                return $ map snd filtered_items
                 FS.inspectPage (fetchItems sz) page
         let loop pn=do
                 if(pn>full_pages || (pn==full_pages && last_page_size==0))
-                    then return()
+                    then return ()
                     else do
                         items<-liftIO $ read_page pn (if pn==full_pages then last_page_size else recordsPerPage table)
                         mapM_ yield items

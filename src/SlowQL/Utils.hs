@@ -4,8 +4,14 @@ module SlowQL.Utils where
     import Data.Word
     import Foreign.Ptr
     import Data.Binary.Put
-    import Data.ByteString as BS
-    import Data.ByteString.Lazy as BSL
+    import qualified Data.ByteString as BS
+    import qualified Data.ByteString.Lazy as BSL
+    import Data.List (unfoldr)
+    import qualified Data.Set as Set
+
+    hasDuplicates :: (Ord a) => [a] -> Bool
+    hasDuplicates list = length list /= length set
+                    where set = Set.fromList list
     extractMaybe :: a->Maybe a->a
     extractMaybe _ (Just b)=b
     extractMaybe a Nothing=a
@@ -24,3 +30,19 @@ module SlowQL.Utils where
     readByte p o=peekElemOff (castPtr (p `plusPtr` o) :: Ptr Word8) 0
     runPut' :: Put->BS.ByteString
     runPut' =BSL.toStrict . runPut
+
+    justWhen :: (a -> Bool) -> (a -> b) -> (a -> Maybe b)
+    justWhen f g a = if f a then Just (g a) else Nothing
+    nothingWhen :: (a -> Bool) -> (a -> b) -> (a -> Maybe b)
+    nothingWhen f = justWhen (not . f)
+    chunksOfBS :: Int -> BS.ByteString -> [BS.ByteString]
+    chunksOfBS x = Data.List.unfoldr (nothingWhen BS.null (BS.splitAt x))
+    rangeBS :: Int->Int->BS.ByteString->BS.ByteString
+    rangeBS off len=(BS.take len).(BS.drop off)
+
+    checkWhen :: Bool->String->IO ()->IO ()
+    checkWhen pred msg op=
+        if pred
+            then op
+            else putStrLn msg
+
