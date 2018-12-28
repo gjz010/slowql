@@ -138,6 +138,12 @@ module Main where
         withDatabase state $ DB.describeTable a
     execute state (P.DropTable t)=
         withDatabase state $ DB.dropTable t
+    execute state (P.CreateIndex a b)=
+        withDatabase state $ DB.createIndex a b
+    execute state (P.DropIndex a b)=
+        withDatabase state $ DB.dropIndex a b
+    execute state (P.ShowDatabase)=
+        withDatabase state $ DB.showDatabase
     execute state sql=(putStrLn ("Not implemented yet! "++(show sql))) >>= (const $ return state)
     
     initialize :: IO()

@@ -6,6 +6,7 @@ import qualified SlowQL.Record.DataType as DT
 import qualified Data.ByteString.Char8 as BC
 import Data.Either
 import Data.Maybe
+import Debug.Trace
 }
 %name parseTokens
 %tokentype { Token }
@@ -25,6 +26,7 @@ import Data.Maybe
     IDENTIFIER {TokenIdentifier $$}
     STRING {TokenString $$}
     INT {TokenInteger $$}
+    FLOAT {TokenFloatLit $$}
     database    {TokenDatabase}
     table   {TokenTable}
     index   {TokenIndex}
@@ -86,8 +88,8 @@ DomainList     : DomainDesc {$1 (TableDescription [] Nothing [])}
 DomainDesc     : IDENTIFIER char MaxLength Nullable    {appendParam $ DT.TVarCharParam (DT.TGeneralParam (BC.pack $1) $4) $3}
                | IDENTIFIER int MaxLength Nullable     {appendParam $ DT.TIntParam (DT.TGeneralParam (BC.pack $1) $4) $3}
                | IDENTIFIER float Nullable     {appendParam $ DT.TFloatParam (DT.TGeneralParam (BC.pack $1) $3)}
-               | IDENTIFIER date Nullable      {appendParam $ DT.TFloatParam (DT.TGeneralParam (BC.pack $1) $3)}
-               | primary key '(' IdtList ')' {setPrimary $4}
+               | IDENTIFIER date Nullable      {appendParam $ DT.TDateParam (DT.TGeneralParam (BC.pack $1) $3)}
+               | primary key '(' IDENTIFIER ')' {setPrimary [$4]}
                | foreign key '(' IDENTIFIER ')' references IDENTIFIER '(' IDENTIFIER ')' {appendForeign $4 $7 $9}
 MaxLength      : {- empty -} {255}
                | '(' INT ')' {$2}
@@ -108,6 +110,7 @@ ValueList: Value {[$1]}
 Value: STRING {DT.ValChar (Just $ BC.pack $1)}
             | INT {DT.ValInt (Just $1)}
             | null {DT.ValNull}
+            | FLOAT {DT.ValFloat (Just $1)}
 TableList: IDENTIFIER {[$1]}
          | IDENTIFIER ',' TableList {$1:$3}
 IsNull : null  {True}
@@ -145,14 +148,14 @@ DeleteStmt: delete from IDENTIFIER WhereWhereClause {DeleteStmt $3 $4}
 SetClause: Assignment {[$1]}
          | Assignment ',' SetClause {$1:$3}
 Assignment: IDENTIFIER '=' Value {($1, $3)}
-CreateIndex: create index IDENTIFIER IdtList {CreateIndex $3 $4}
-DropIndex: drop index IDENTIFIER IdtList {CreateIndex $3 $4}
+CreateIndex: create index IDENTIFIER '(' IDENTIFIER ')' {CreateIndex $3 $5}
+DropIndex: drop index IDENTIFIER '(' IDENTIFIER ')' {DropIndex $3 $5}
 {
 parseError :: [Token]->a
 parseError _=error "Error while parsing SQL statement."
 
 isText :: Char->Bool
-isText c = (isAlphaNum c || c=='_' || c=='-')
+isText c = (isAlphaNum c || c=='_')
 
 data Token
     = TokenCreate|TokenDrop|TokenSelect|TokenUpdate|TokenDelete|TokenInsert
@@ -162,6 +165,7 @@ data Token
     |TokenTables|TokenInto|TokenValues|TokenSet|TokenIs|TokenDesc|TokenAsc|TokenAnd|TokenForeign|TokenReferences
     |TokenDot|TokenEq|TokenNeq|TokenLeq|TokenGeq|TokenLt|TokenGt|TokenStar
     |TokenOrder|TokenBy|TokenLimit|TokenOffset
+    |TokenFloatLit Float
     deriving(Show)
 data Op=OpEq|OpNeq|OpLeq|OpGeq|OpLt|OpGt deriving (Show)
 data Column=LocalCol String|ForeignCol String String deriving (Show)
@@ -189,7 +193,7 @@ data SQLStatement
     | UpdateStmt String [(String, DT.TValue)] WhereClause
     | DeleteStmt String WhereClause
     | InsertStmt String [[DT.TValue]]
-    | CreateIndex String [String]
+    | CreateIndex String String
     | DropIndex String String
     | ShowTables
     | DescribeTable String
@@ -204,7 +208,8 @@ tokenize :: String->[Token]
 tokenize []=[]
 tokenize (c:cs)
     | isSpace c=tokenize cs
-    | isDigit c=readNum $ c:cs
+    | isDigit c=readNum False $ c:cs
+    | c == '-' = readNum True $ cs
     | isText c=readVar $ c:cs
 tokenize (',':cs)=TokenComma:tokenize cs
 tokenize (';':cs)=TokenSemicolon:tokenize cs
@@ -262,10 +267,13 @@ readVar cs=
                 "offset"->TokenOffset
                 otherwise->TokenIdentifier $ map toLower token
     in sym:tokenize rest
-readNum cs=TokenInteger (read num):tokenize rest
-        where (num, rest)=span isDigit cs
+doneg n x= if n then -x else x
+readNum neg cs=let (nump, rest)=span isDigit cs
+                 in if (head rest)=='.'
+                        then let (nums, rest2)=span isDigit $ tail rest in (TokenFloatLit (doneg neg $ read (nump++"."++nums))):tokenize rest2
+                        else (TokenInteger (doneg neg $ read nump)):tokenize rest
 
-
+tracedLex str=let tokens=tokenize str in trace (show tokens) tokens
         
 parseSQL=parseTokens . tokenize
 }

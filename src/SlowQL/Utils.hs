@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module SlowQL.Utils where
     import Data.Maybe
     import Foreign.Storable
@@ -5,10 +6,15 @@ module SlowQL.Utils where
     import Foreign.Ptr
     import Data.Binary.Put
     import qualified Data.ByteString as BS
+    import qualified Data.ByteString.Char8 as BC
     import qualified Data.ByteString.Lazy as BSL
     import Data.List (unfoldr)
     import qualified Data.Set as Set
     import Control.Exception 
+    import Data.Time
+    import Data.Binary.Get
+    import Data.UUID.V4
+    import qualified Data.UUID as UUID
     hasDuplicates :: (Ord a) => [a] -> Bool
     hasDuplicates list = length list /= length set
                     where set = Set.fromList list
@@ -53,3 +59,31 @@ module SlowQL.Utils where
     assertIO :: Bool->String->IO ()
     assertIO False reason=evaluate $ error reason
     assertIO True _ = return ()
+
+    parseDate :: String->Maybe Day
+    parseDate=parseTimeM True defaultTimeLocale "%Y/%m/%d"
+    parseDateBS :: BS.ByteString->Maybe Day
+    parseDateBS=parseDate . BC.unpack
+    getDate :: Get Day
+    getDate=do
+        a<-getWord32le
+        b<-getWord32le
+        c<-getWord32le
+        return $ fromGregorian (fromIntegral a) (fromIntegral b) (fromIntegral c)
+    putDate :: Day->Put
+    putDate date=do
+        let (a, b, c)=toGregorian date
+        putWord32le $ fromIntegral a
+        putWord32le $ fromIntegral b
+        putWord32le $ fromIntegral c
+
+    generateUUID :: IO BS.ByteString
+    generateUUID=do
+        uuid<-nextRandom
+        return $ BC.pack $ UUID.toString uuid --we use ascii-form here to make it readable
+
+    uuidNegInfinity :: BS.ByteString
+    uuidNegInfinity=BS.pack $ replicate 40 (fromIntegral 0)
+    uuidPosInfinity :: BS.ByteString
+    uuidPosInfinity=BS.pack $ replicate 40 (fromIntegral 255)
+    

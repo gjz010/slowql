@@ -6,7 +6,7 @@ module SlowQL.Record.Relation where
     import Data.Array.IArray
     import Data.Conduit
     import qualified SlowQL.Manage.Table as T
-    import qualified SlowQL.Manage.Index as I
+    --import qualified SlowQL.Manage.Index as I
     import qualified SlowQL.Conduit.Combinator as Comb
     import Control.Monad
     import Conduit
@@ -29,8 +29,8 @@ module SlowQL.Record.Relation where
     instance Show RecordPred where
         show x="[Some filter function]"
     -- evaluate (RelCartForeign source index_placeholder source_id placeholder_id) l1 l2
-    evaluate :: RelExpr->Array Int T.Table->Array Int I.Index->ConduitT () DT.Record IO ()
-    evaluate expr l1 l2=go expr
+    evaluate :: RelExpr->Array Int T.Table->ConduitT () DT.Record IO ()
+    evaluate expr l1 =go expr
         where 
             go (RelEnumAll idx_table)=T.enumerateAll (l1!idx_table)
             go (RelProjection list source)=(go source) .| (Comb.projection list)

@@ -39,6 +39,7 @@ dependencies:
 - aeson
 - array
 - vector
+- uuid
 library:
   source-dirs: src
 

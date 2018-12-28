@@ -19,9 +19,11 @@ module SlowQL.Record.DataType where
     import qualified Data.ByteString.Lazy
     import qualified Data.ByteString.Char8 as BC
     import Control.DeepSeq
+    import SlowQL.Utils
     type ByteString=BS.ByteString
+    
     data DataWriteError = DataWriteError ErrorType TParam TValue deriving (Show)
-    data ErrorType = NullValue | ForeignKeyViolated | StringTooLong | TypeMismatch deriving (Show, Enum)
+    data ErrorType = NullValue | ForeignKeyViolated | StringTooLong | TypeMismatch | BadDate deriving (Show, Enum)
     
     data TGeneralParam=TGeneralParam {name :: ByteString, nullable :: Bool} deriving(Show, Generic)
     defaultGeneral name=TGeneralParam {name=name, nullable=True}
@@ -32,7 +34,9 @@ module SlowQL.Record.DataType where
                  | TBoolParam {general ::TGeneralParam}
                  deriving (Show, Generic)
 
-    data TValue = ValChar (Maybe ByteString) | ValInt (Maybe Int) | ValFloat (Maybe Float) | ValDate (Maybe UTCTime) |ValBool (Maybe Bool) | ValNull deriving (Show, Generic)
+    data TValue = ValChar (Maybe ByteString) | ValInt (Maybe Int) | ValFloat (Maybe Float) | ValDate (Maybe Day) |ValBool (Maybe Bool) | ValNull 
+                | ValNegInfty | ValPosInfty
+                deriving (Show, Generic)
     instance NFData TParam 
     instance NFData TValue
     instance NFData TGeneralParam
@@ -42,6 +46,10 @@ module SlowQL.Record.DataType where
         ValFloat a == ValFloat b = a==b
         ValDate a == ValDate b = a==b
         ValBool a == ValBool b = a==b
+        ValNegInfty == ValNegInfty = True
+        ValPosInfty == ValPosInfty = True
+        ValNegInfty == ValPosInfty = False
+        ValPosInfty == ValNegInfty = False
         _ == _ = error "Bad Eql!"
     instance Ord TValue where
         (ValChar Nothing) <= (ValChar _)=True
@@ -54,6 +62,10 @@ module SlowQL.Record.DataType where
         (ValDate (Just a)) <= (ValDate (Just b))=a<=b
         (ValBool Nothing) <= (ValBool _)=True
         (ValBool (Just a)) <= (ValBool (Just b))=a<=b
+        ValNegInfty <= _ = True
+        _ <= ValPosInfty = True
+        _ <= ValNegInfty = False
+        ValPosInfty <= _ = False
         _ <= _ = error "Bad Comparison!"
 
     compatiblePP :: TParam->TParam->Bool
@@ -74,6 +86,8 @@ module SlowQL.Record.DataType where
     compatiblePV TFloatParam{general=TGeneralParam {nullable=True}} ValNull=True
     compatiblePV TDateParam{general=TGeneralParam {nullable=True}} ValNull=True
     compatiblePV TBoolParam{general=TGeneralParam {nullable=True}} ValNull=True
+    --Backdoor for parsing date
+    compatiblePV TDateParam{general=TGeneralParam {nullable=True}} (ValChar (Just date))=isJust $ parseDateBS date
     compatiblePV _ _=False
     isNull :: TValue->Bool
     isNull (ValChar a)=isNothing a
@@ -122,7 +136,7 @@ module SlowQL.Record.DataType where
     paramSize TVarCharParam{max_length=max_length}=1+4+max_length
     paramSize TIntParam{}=1+4
     paramSize TFloatParam{}=1+4
-    paramSize TDateParam{}=1+8
+    paramSize TDateParam{}=1+12
     paramSize TBoolParam{}=1
 
 
@@ -132,7 +146,7 @@ module SlowQL.Record.DataType where
     createValue TVarCharParam{max_length=max_length}=ValChar(Just "")
     createValue TIntParam{}=ValInt(Just 0)
     createValue TFloatParam{}=ValFloat(Just 0.0)
-    createValue TDateParam{}=ValDate(Just (UTCTime (ModifiedJulianDay 0) (secondsToDiffTime 0)))
+    createValue TDateParam{}=ValDate(Just (fromGregorian 1919 8 10))
     createValue TBoolParam{}=ValBool(Just False)
     nullValue :: TParam->TValue
     nullValue TVarCharParam{}=ValChar Nothing
@@ -182,7 +196,7 @@ module SlowQL.Record.DataType where
                     1 -> ValBool Nothing 
     readField TFloatParam{}=checkNull (ValFloat Nothing) $ fmap (ValFloat . Just) readFloat
                              
-    readField TDateParam{}=return $ ValDate $ Just (UTCTime (ModifiedJulianDay 0) (secondsToDiffTime 0)) --TODO
+    readField TDateParam{}=checkNull (ValDate Nothing) $ fmap (ValDate . Just) getDate
 
     writeField :: TParam->TValue->Either DataWriteError Put
     writeField param value = doWriteField param value (\ etype -> Left $ DataWriteError etype param value)
@@ -194,6 +208,9 @@ module SlowQL.Record.DataType where
     doWriteField TFloatParam{general=TGeneralParam {nullable=nullable}} (ValFloat Nothing) throw=tryEmitNullFlag nullable throw
     doWriteField TDateParam{general=TGeneralParam {nullable=nullable}} (ValDate Nothing) throw=tryEmitNullFlag nullable throw
     doWriteField TBoolParam{general=TGeneralParam {nullable=nullable}} (ValBool Nothing) throw=tryEmitNullFlag nullable throw
+    doWriteField TDateParam{general=TGeneralParam {nullable=nullable}} (ValChar (Just date)) throw=let seldate=parseDateBS date in if isNothing seldate then throw BadDate else Right $ do
+                putWord8 0
+                let Just d=seldate in putDate d
 
     doWriteField TVarCharParam{max_length=mlen} (ValChar (Just val) ) throw=if  fromIntegral (BS.length val)>mlen
         then throw StringTooLong
@@ -212,6 +229,9 @@ module SlowQL.Record.DataType where
     doWriteField TFloatParam{} (ValFloat (Just val) ) throw=Right $ do
         putWord8 0
         putWord32le $ floatToWord val
+    doWriteField TDateParam{} (ValDate (Just date) ) throw=Right $ do
+        putWord8 0
+        putDate date
     doWriteField TBoolParam{} (ValBool (Just val) ) throw=Right $ putWord8 (if val then 2 else 0)
     doWriteField param (ValNull) throw=doWriteField param (nullValue param) throw
     doWriteField a b throw=throw TypeMismatch
@@ -241,6 +261,9 @@ module SlowQL.Record.DataType where
             parse_field bs (get, offset)=runGet get $ Data.ByteString.Lazy.fromStrict (BS.drop offset bs)
         in (\bs->Record $ amap (parse_field bs) field_hint)
     
+
+    ridParam :: TParam
+    ridParam=TVarCharParam (TGeneralParam (BC.pack "_rid") False) 40
     {-
     testInsert :: Domains->[TValue]->Maybe Record
     testInsert dom vals=let el=elems $ domains dom

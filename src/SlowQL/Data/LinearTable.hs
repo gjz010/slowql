@@ -40,10 +40,10 @@ module SlowQL.Data.LinearTable where
     totalItems table=do
         s<-readIORef $ stat table
         return $ currentItems s
-    writeToEmptyPos :: ByteString->LinearTable->IO ()
+    writeToEmptyPos :: ByteString->LinearTable->IO Int
     writeToEmptyPos dat table=do
         st<-readIORef $ stat table
-        newstat<-if isJust $ freeStackPtr st then
+        (newstat, inserted_index)<-if isJust $ freeStackPtr st then
             do
                 let Just index=freeStackPtr st
                 let (pn, id)=(quot index $ recordsPerPage table, rem index $ recordsPerPage table)
@@ -55,7 +55,7 @@ module SlowQL.Data.LinearTable where
                             FS.writeBSOff (start+4) dat p 
                             return $ decodeMaybe tagEndOfList (fromIntegral newptr)
                 newptr<-FS.modifyPage f page
-                return $ LinearTableStat (currentItems st) newptr
+                return (LinearTableStat (currentItems st) newptr, index)
         else
             do
                 let index=currentItems st
@@ -69,8 +69,9 @@ module SlowQL.Data.LinearTable where
                 --print "A"
                 newptr<-FS.modifyPage f page
                 --print "B"
-                return $ LinearTableStat (index+1) Nothing
+                return (LinearTableStat (index+1) Nothing, index)
         writeIORef (stat table) newstat
+        return inserted_index
     initialize :: String->Int->IO ()
     initialize path recordsize=do
         file<-FS.openDataFile path
@@ -95,6 +96,7 @@ module SlowQL.Data.LinearTable where
                     stat<-newIORef $ LinearTableStat (fromIntegral currentitems) (decodeMaybe tagEndOfList (fromIntegral freestackptr))
                     return $ LinearTable file stat (fromIntegral recordsize) (fromIntegral recordsperpage)
         FS.inspectPage f metadata
+    
     flushMetadata::LinearTable->IO()
     flushMetadata table=do
         metadata<-FS.getPage (file table) 0
@@ -166,11 +168,13 @@ module SlowQL.Data.LinearTable where
                             FS.modifyPage total_op page
         iteratePages task table
         readIORef counter
-    insert :: ByteString->LinearTable->IO()
+    insert :: ByteString->LinearTable->IO Int
     insert=writeToEmptyPos
 
     enumerate :: LinearTable->ConduitT () ByteString IO ()
-    enumerate table=do
+    enumerate lt=enumerateWithIdx lt .| (mapC snd)
+    enumerateWithIdx :: LinearTable->ConduitT () (Int, ByteString) IO ()
+    enumerateWithIdx table=do
         liftIO $ putStrLn "Table Begin!"
         (full_pages, last_page_size)<-liftIO $ do
                 n<-totalItems table
@@ -193,7 +197,7 @@ module SlowQL.Data.LinearTable where
                                                 .|. ((fromIntegral $ BS.index hdr 1:: Word32) `shiftL` 8)
                                                 .|. ((fromIntegral $ BS.index hdr 2:: Word32) `shiftL` 16)
                                                 .|. ((fromIntegral $ BS.index hdr 3:: Word32) `shiftL` 24))
-                                let filtered_items=filter (\(h, t)->get_header h==tagNotEmpty) items
+                                let filtered_items=filter (\(h, t)->get_header h==tagNotEmpty) $ zipWith (\i (h,t)->(h, (i, t))) [(pn*rpp)..] items
                                 return $ map snd filtered_items
                 FS.inspectPage (fetchItems sz) page
         let loop pn=do
