@@ -13,6 +13,7 @@ module SlowQL.Manage.Table where
     import Control.DeepSeq
     import Data.Either
     import SlowQL.Utils
+    import Data.Maybe
     import qualified SlowQL.Data.LinearTable as LT
     type ByteString=BS.ByteString
     
@@ -29,7 +30,7 @@ module SlowQL.Manage.Table where
 
     create :: String->String->DT.Domains->IO TableDef
     create path name domains=do
-        LT.initialize path 10
+        LT.initialize path (DT.calculateSize domains)
         return $ TableDef (BC.pack name) domains
     
     serializeTableDef :: TableDef->Put
@@ -58,4 +59,23 @@ module SlowQL.Manage.Table where
             then let Left err=put in print err
             else let Right p=put in LT.insert (runPut' p) $ raw table
     
-    
+    update :: Table->(DT.Record->Maybe DT.Record)->IO Int
+    update table updator=do
+        let fext=DT.extractAllFields (domains $ def table)
+        let raw_updator bs=do
+                let rc=fext bs
+                let nrcd=updator rc
+                if(isJust nrcd)
+                    then do
+                        let Just rcd=nrcd
+                        let put=DT.putRecord (domains $ def table) rcd
+                        if isLeft put
+                            then let Left err=put in print err >>= (const $ return Nothing)
+                            else let Right p=put in return $ Just (runPut' p)
+                    else return Nothing
+        LT.update raw_updator (raw table)
+    delete :: Table->(DT.Record->Bool)->IO Int
+    delete table filter=do
+        let fext=DT.extractAllFields (domains $ def table)
+        let raw_filter=return .filter.fext
+        LT.delete raw_filter (raw table)

@@ -69,6 +69,11 @@ module SlowQL.Record.DataType where
     compatiblePV TFloatParam{} ValFloat{}=True
     compatiblePV TDateParam{} ValDate{}=True
     compatiblePV TBoolParam{} ValBool{}=True
+    compatiblePV TVarCharParam{general=TGeneralParam {nullable=True}} ValNull=True
+    compatiblePV TIntParam{general=TGeneralParam {nullable=True}} ValNull=True
+    compatiblePV TFloatParam{general=TGeneralParam {nullable=True}} ValNull=True
+    compatiblePV TDateParam{general=TGeneralParam {nullable=True}} ValNull=True
+    compatiblePV TBoolParam{general=TGeneralParam {nullable=True}} ValNull=True
     compatiblePV _ _=False
     isNull :: TValue->Bool
     isNull (ValChar a)=isNothing a
@@ -120,12 +125,21 @@ module SlowQL.Record.DataType where
     paramSize TDateParam{}=1+8
     paramSize TBoolParam{}=1
 
+
+    calculateSize :: Domains->Int
+    calculateSize x= sum $ map paramSize $ elems $ domains x
     createValue :: TParam->TValue
     createValue TVarCharParam{max_length=max_length}=ValChar(Just "")
     createValue TIntParam{}=ValInt(Just 0)
     createValue TFloatParam{}=ValFloat(Just 0.0)
     createValue TDateParam{}=ValDate(Just (UTCTime (ModifiedJulianDay 0) (secondsToDiffTime 0)))
     createValue TBoolParam{}=ValBool(Just False)
+    nullValue :: TParam->TValue
+    nullValue TVarCharParam{}=ValChar Nothing
+    nullValue TIntParam{}=ValInt Nothing
+    nullValue TFloatParam{}=ValFloat Nothing
+    nullValue TDateParam{}=ValDate Nothing
+    nullValue TBoolParam{}=ValBool Nothing
     readBool :: Get Bool
     readBool=do
         b<-getWord8
@@ -199,6 +213,7 @@ module SlowQL.Record.DataType where
         putWord8 0
         putWord32le $ floatToWord val
     doWriteField TBoolParam{} (ValBool (Just val) ) throw=Right $ putWord8 (if val then 2 else 0)
+    doWriteField param (ValNull) throw=doWriteField param (nullValue param) throw
     doWriteField a b throw=throw TypeMismatch
 
     putRecord :: Domains->Record->Either DataWriteError Put
@@ -226,9 +241,15 @@ module SlowQL.Record.DataType where
             parse_field bs (get, offset)=runGet get $ Data.ByteString.Lazy.fromStrict (BS.drop offset bs)
         in (\bs->Record $ amap (parse_field bs) field_hint)
     
-
-                
-
+    {-
+    testInsert :: Domains->[TValue]->Maybe Record
+    testInsert dom vals=let el=elems $ domains dom
+            in
+                if((length el)/=(length vals))
+                    then Nothing
+                    else do
+                            r<-mapM (\(par, val)->let nval=if val==) $ zip el map vals
+    -}
     --doWriteField TFloatParam{} (ValFloat (Just val) ) throw=Right $ B.unpack $ B.concat[B.singleton 0, B.pack $ writeFloat val]
     --doWriteField TIntParam{general=TGeneralParam {nullable=nullable}} (ValInt Nothing)=
     

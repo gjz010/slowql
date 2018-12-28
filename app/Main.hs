@@ -120,14 +120,24 @@ module Main where
 
     execute state (P.ShowTables)=
         withDatabase state $ DB.showTables
-    execute state (P.SelectStmt columns tables whereclause)=
-        withDatabase state $ DB.selectFrom (P.SelectStmt columns tables whereclause)
-    execute state (P.SelectAllStmt tables whereclause)=
-        withDatabase state $ DB.selectFrom (P.SelectAllStmt tables whereclause)
+    execute state (P.SelectStmt columns tables whereclause suffix)=
+        withDatabase state $ DB.selectFrom (P.SelectStmt columns tables whereclause suffix)
+    execute state (P.SelectAllStmt tables whereclause suffix)=
+        withDatabase state $ DB.selectFrom (P.SelectAllStmt tables whereclause suffix)
 
 
     execute state (P.InsertStmt a b)=
         withDatabase state $ DB.doInsert a b
+
+    execute state (P.UpdateStmt a b c)=
+        withDatabase state $ DB.doUpdate a b c
+
+    execute state (P.DeleteStmt a b)=
+        withDatabase state $ DB.doDelete a b
+    execute state (P.DescribeTable a)=
+        withDatabase state $ DB.describeTable a
+    execute state (P.DropTable t)=
+        withDatabase state $ DB.dropTable t
     execute state sql=(putStrLn ("Not implemented yet! "++(show sql))) >>= (const $ return state)
     
     initialize :: IO()

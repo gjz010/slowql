@@ -44,7 +44,7 @@ module SlowQL.Manage.Database where
     showTables :: Database->IO ()
     showTables db=do
         d<-readIORef $ def db
-        print $ tables d
+        print $ map T.name $ tables d
     createTable :: Database->String->[DT.TParam]->Maybe [String]->[(String, (String, String))]->IO ()
     createTable db name params primary fkey=do
         -- Pre-create check
@@ -83,8 +83,9 @@ module SlowQL.Manage.Database where
         e<-doesDirectoryExist ("slowql-data/"++name)
         if e
             then do
-                str<-BL.readFile $ "slowql-data/"++name++"/.slowql"
-                let df=runGet deserialize str
+                putStrLn "Opening database"
+                str<-BS.readFile $ "slowql-data/"++name++"/.slowql"
+                let df=runGet deserialize (BL.fromStrict str)
                 lt<-openAllTables df
                 r1<-newIORef df
                 r2<-newIORef lt
@@ -95,6 +96,7 @@ module SlowQL.Manage.Database where
         lt<-readIORef $ live_tables db
         mapM_ T.close $ Map.elems lt
         d<-readIORef $ def db
+        putStrLn "Closing database"
         BL.writeFile ("slowql-data/"++(BC.unpack $ name d)++"/.slowql") $runPut $ serialize d
     create :: String->IO (Maybe String)
     create db=do
@@ -127,6 +129,16 @@ module SlowQL.Manage.Database where
             else return $ Just "Database does not exist."
 
 
+    dropTable :: String->Database->IO ()
+    dropTable tblname db=do
+        [tbl]<-getTablesByName [tblname] db
+        T.close tbl
+        ddef<-readIORef $ def db
+        let new_tables=filter (\d->(T.name d) /= (BC.pack tblname)) (tables ddef)
+        writeIORef (def db) ddef{tables=new_tables}
+        modifyIORef' (live_tables db) (Map.delete $ BC.pack tblname)
+        removeFile $ tablePath (BC.unpack $ name ddef) (tblname)
+        putStrLn "DROP TABLE"
     getTablesByName :: [String]->Database->IO [T.Table]
     getTablesByName l db=do
         mp<-readIORef $ live_tables db
@@ -160,9 +172,9 @@ module SlowQL.Manage.Database where
     compileSelect :: P.SQLStatement->Database->IO (R.RelExpr, Arr.Array Int T.Table)
     compileSelect stmt db=do
         df<-readIORef $ def db
-        let get_tables (P.SelectStmt _ a b)=(a,b)
-            get_tables (P.SelectAllStmt a b)=(a,b)
-        let (used_tables, whereclause)=get_tables stmt
+        let get_tables (P.SelectStmt _ a b c)=(a,b,c)
+            get_tables (P.SelectAllStmt a b c)=(a,b,c)
+        let (used_tables, whereclause, suffices)=get_tables stmt
         used_tables_list<-getTablesByName used_tables db -- param 2
         let all_table_defs=map T.def used_tables_list
         let translate=(forceJust "Column missing!" ). (translateColumn all_table_defs)
@@ -197,20 +209,88 @@ module SlowQL.Manage.Database where
             apply_multitable expr _=expr
         let full_expr=foldl' apply_multitable folded_expr compiled_whereclause
         --Expand projectors
-        let add_projector (P.SelectAllStmt _ _) expr=expr
-            add_projector (P.SelectStmt proj _ _) expr=R.RelProjection (map (\((_, _, c, _))->c) $ map translate proj) expr
-        let query_plan=add_projector stmt full_expr
+        let add_projector (P.SelectAllStmt _ _ _) expr=expr
+            add_projector (P.SelectStmt proj _ _ _) expr=R.RelProjection (map (\((_, _, c, _))->c) $ map translate proj) expr
+        
+        -- Add offset
+        let apply_offset expr (P.COffset offset)=R.RelSkip offset expr
+            apply_offset expr _=expr
+        -- Add limit
+        let apply_limit expr (P.CLimit limit)=R.RelTake limit expr
+            apply_limit expr _=expr
+        let query_plan=(flip (foldl' apply_limit) suffices) $ (flip (foldl' apply_offset) suffices)$ add_projector stmt full_expr
         evaluate $ force query_plan
         putStrLn ("Query plan: "++(show query_plan))
         return (query_plan, DT.buildArray' used_tables_list)
         
-    doInsert :: String->[DT.TValue]->Database->IO ()
+    doInsert :: String->[[DT.TValue]]->Database->IO ()
     doInsert tblname tvalues db=do
         [tbl]<-getTablesByName [tblname] db
         --do pre-flight check
-        T.insert tbl (DT.Record $ DT.buildArray' tvalues)
-    compileUpdate stmt db=return ()
-    compileDelete stmt db=return ()
+        mapM_ (\recd->T.insert tbl (DT.Record $ DT.buildArray' recd)) tvalues
+        putStrLn ("INSERT "++(show $ length tvalues))
+    doUpdate :: String->[(String, DT.TValue)]->P.WhereClause->Database->IO()
+    doUpdate tblname tvalues wc db=do
+        [tbl]<-getTablesByName [tblname] db
+        let translate=(forceJust "Column missing!") .(translateColumn [T.def tbl] ) 
+        let (column_names, values)=unzip tvalues
+        let columns= map (translate . P.LocalCol) column_names
+        --Check compatible
+        let check_compatible=and $ zipWith (\v (_,_,_,p)->DT.compatiblePV p v) values columns
+        assertIO check_compatible "Some column and value not compatible!"
+        let expand_where P.WhereAny=[]
+            expand_where (P.WhereOp column op (P.ExprV val))=let (t,c,_, p)=translate column in if DT.compatiblePV p val then [R.SingleTableWhereClause t (\r->applyOp op ((DT.fields r) ! c) val)] else [R.WhereNotCompatiblePV t c]
+            expand_where (P.WhereOp c1 op (P.ExprC c2))=
+                let (t1, ci1, i1, p1)=translate c1
+                    (t2, ci2, i2, p2)=translate c2
+                in if DT.compatiblePP p1 p2
+                    then if t1==t2
+                        then [R.SingleTableWhereClause t1 (\r->applyOp op ((DT.fields r) ! ci1) ((DT.fields r) ! ci2))]
+                        else [R.GeneralWhereClause (\r->applyOp op ((DT.fields r) ! i1) ((DT.fields r) ! i2))]
+                    else [R.WhereNotCompatiblePP t1 ci1 t2 ci2]
+            expand_where (P.WhereIsNull column isnull)=let (t, c, _, _)=translate column in [R.SingleTableWhereClause t (\r->(DT.isNull ((DT.fields r)!c))==isnull)]
+            expand_where (P.WhereAnd a b)=(expand_where a)++(expand_where b)
+        let compiled_where=expand_where wc
+        mapM_ R.assertCompileError compiled_where
+        let eval_where rc (R.SingleTableWhereClause _ pred)=pred rc
+        --Do the real update work
+        let replacement_tree=zipWith (\v (_, i, _, _)->(i, v)) values columns
+        let checker rc=let pass w=eval_where rc w in foldr (&&) True (map pass compiled_where)
+        let updator rc=if checker rc
+            then Just $ DT.Record $ Arr.accum (\o n->n) (DT.fields rc) replacement_tree
+            else Nothing
+        updated<-T.update tbl updator
+        putStrLn ("UPDATE "++(show updated))
+    doDelete :: String->P.WhereClause->Database->IO ()
+    doDelete tblname wc db=do
+        [tbl]<-getTablesByName [tblname] db
+        let translate=(forceJust "Column missing!") .(translateColumn [T.def tbl] ) 
+        let expand_where P.WhereAny=[]
+            expand_where (P.WhereOp column op (P.ExprV val))=let (t,c,_, p)=translate column in if DT.compatiblePV p val then [R.SingleTableWhereClause t (\r->applyOp op ((DT.fields r) ! c) val)] else [R.WhereNotCompatiblePV t c]
+            expand_where (P.WhereOp c1 op (P.ExprC c2))=
+                let (t1, ci1, i1, p1)=translate c1
+                    (t2, ci2, i2, p2)=translate c2
+                in if DT.compatiblePP p1 p2
+                    then if t1==t2
+                        then [R.SingleTableWhereClause t1 (\r->applyOp op ((DT.fields r) ! ci1) ((DT.fields r) ! ci2))]
+                        else [R.GeneralWhereClause (\r->applyOp op ((DT.fields r) ! i1) ((DT.fields r) ! i2))]
+                    else [R.WhereNotCompatiblePP t1 ci1 t2 ci2]
+            expand_where (P.WhereIsNull column isnull)=let (t, c, _, _)=translate column in [R.SingleTableWhereClause t (\r->(DT.isNull ((DT.fields r)!c))==isnull)]
+            expand_where (P.WhereAnd a b)=(expand_where a)++(expand_where b)
+        let compiled_where=expand_where wc
+        mapM_ R.assertCompileError compiled_where
+        let eval_where rc (R.SingleTableWhereClause _ pred)=pred rc
+        -- Do the real delete work
+        let deleter rc=let pass w=eval_where rc w in foldr (&&) True (map pass compiled_where)
+        deleted<-T.delete tbl deleter
+        putStrLn ("DELETE "++(show deleted))
+
+    describeTable :: String->Database->IO()
+    describeTable tblname db=do
+        [tbl]<-getTablesByName [tblname] db
+        print $ T.def tbl
+    --compileUpdate stmt db=return ()
+    --compileDelete stmt db=return ()
 
     --data Database=Database {file :: Han}
     --createDatabase :: String->IO ()

@@ -20,7 +20,10 @@ module SlowQL.Record.Relation where
                 | RelCartForeign RelExpr Int Int Int --source index_placeholder source_id placeholder_id
                 | RelProjection [Int] RelExpr --columns expr
                 | RelCart RelExpr RelExpr -- expr1 expr2
-                | RelFilter RecordPred RelExpr deriving (Show, Generic)
+                | RelFilter RecordPred RelExpr 
+                | RelSkip Int RelExpr-- skip
+                | RelTake Int RelExpr-- take
+                deriving (Show, Generic)
     instance NFData RelExpr
     instance NFData RecordPred 
     instance Show RecordPred where
@@ -38,7 +41,8 @@ module SlowQL.Record.Relation where
                 in pair.| Comb.concatC
             go (RelCart lhs rhs)=(Comb.cartesian (go lhs) (go rhs)) .| Comb.concatC
             go (RelFilter pred expr)=(go expr).|filterC (getPred pred)
-
+            go (RelSkip nskip expr)=(go expr) .| Comb.dropConduit nskip
+            go (RelTake ntake expr)=(go expr) .| takeC ntake
     data CompiledWhereClause=
                 SingleTableWhereClause Int (DT.Record->Bool) --So no need to participate in cross product.
             |   GeneralWhereClause (DT.Record->Bool) --Must be handled in total field

@@ -60,12 +60,15 @@ module SlowQL.Data.LinearTable where
             do
                 let index=currentItems st
                 let (pn, id)=(quot index $ recordsPerPage table, rem index $ recordsPerPage table)
+                --print (recordsPerPage table, recordSize table, pn, id, BS.length dat)
                 page<-FS.getPage (file table) (pn+1)
                 let start=id*((recordSize table)+4)
                 let f p=do
                             pokeElemOff (castPtr (p `plusPtr` start):: Ptr Word32) 0 (fromIntegral (tagNotEmpty) )
                             FS.writeBSOff (start+4) dat p
+                --print "A"
                 newptr<-FS.modifyPage f page
+                --print "B"
                 return $ LinearTableStat (index+1) Nothing
         writeIORef (stat table) newstat
     initialize :: String->Int->IO ()
@@ -116,9 +119,11 @@ module SlowQL.Data.LinearTable where
         mapM_ (flip task $ recordsPerPage table) [0..full_pages-1] 
         if last_page_size>0 then task full_pages last_page_size else return ()
 
-    update :: Updater->LinearTable->IO ()
-    update f table=
+    update :: Updater->LinearTable->IO Int
+    update f table=do
+        counter<-newIORef 0
         let task pn ni=do
+                            
                             page<-FS.getPage (file table) (pn+1)
                             let record_size=recordSize table
                             let trymodify i p=do
@@ -128,17 +133,19 @@ module SlowQL.Data.LinearTable where
                                         nbs<-f bs
                                         if isJust nbs then do
                                             let Just jnbs=nbs
+                                            modifyIORef' counter (+1)
                                             FS.writeBSOff (i*(record_size+4)+4) jnbs p
                                         else return ()
                                     else return ()
                             let total_op p=mapM_ (`trymodify` p) [0..ni-1]
                             FS.modifyPage total_op page
-                            return ()
-        in iteratePages task table
-        
-    delete :: Deleter->LinearTable->IO ()
-    delete f table=
+        iteratePages task table
+        readIORef counter
+    delete :: Deleter->LinearTable->IO Int
+    delete f table=do
+        counter<-newIORef 0
         let task pn ni=do
+                            
                             page<-FS.getPage (file table) (pn+1)
                             let record_size=recordSize table
                             let trydelete i p=do
@@ -147,6 +154,7 @@ module SlowQL.Data.LinearTable where
                                         bs<-FS.sliceBSOff (i*(record_size+4)+4) record_size p
                                         todelete<-f bs
                                         if todelete then do
+                                            modifyIORef' counter (+1)
                                             st<-readIORef $ stat table
                                             let stack_top=encodeMaybe tagEndOfList $ freeStackPtr st
                                             pokeElemOff (castPtr (p `plusPtr` (i*(record_size+4))) :: Ptr Word32) 0 (fromIntegral stack_top)
@@ -156,8 +164,8 @@ module SlowQL.Data.LinearTable where
                                     else return ()
                             let total_op p=mapM_ (`trydelete` p) [0..ni-1]
                             FS.modifyPage total_op page
-                            return ()
-        in iteratePages task table
+        iteratePages task table
+        readIORef counter
     insert :: ByteString->LinearTable->IO()
     insert=writeToEmptyPos
 

@@ -8,7 +8,7 @@ module SlowQL.Utils where
     import qualified Data.ByteString.Lazy as BSL
     import Data.List (unfoldr)
     import qualified Data.Set as Set
-
+    import Control.Exception 
     hasDuplicates :: (Ord a) => [a] -> Bool
     hasDuplicates list = length list /= length set
                     where set = Set.fromList list
@@ -46,3 +46,10 @@ module SlowQL.Utils where
             then op
             else putStrLn msg
 
+    assert :: Bool->String->a->a
+    assert False reason _=error reason
+    assert True _ val=val
+
+    assertIO :: Bool->String->IO ()
+    assertIO False reason=evaluate $ error reason
+    assertIO True _ = return ()

@@ -17,4 +17,4 @@ module SlowQL.Conduit.Combinator where
     projection :: (Monad m)=>[Int]->ConduitT DT.Record DT.Record m ()
     projection list=mapC (\r->DT.Record $ DT.buildArray $ map ((!) $ DT.fields r) list)
 
-    
+    dropConduit n = dropC n >> mapC id

@@ -43,7 +43,9 @@ module SlowQL.PageFS where
     emptyPage :: Int->Bool->IO Page
     emptyPage size dty=do
         d<-newIORef dty
-        r<-FAlloc.callocBytes size
+        --print "FALLoc.callocBytes"
+        r<-FAlloc.callocBytes (size)
+        --print "Alloc done"
         return $ Page r d
     freePage :: Page->IO()
     freePage=(FAlloc.free).raw
@@ -115,9 +117,14 @@ module SlowQL.PageFS where
     readFilePage :: Handle->Int->IO Page
     readFilePage handle pid=do
         fsize<-hFileSize handle
-        if toInteger(fsize)<toInteger((pid+1)*pageSize) then
-            emptyPage pageSize True
+        if toInteger(fsize)<toInteger((pid+1)*pageSize) then do
+            --putStrLn "Empty!"
+            --putStrLn "Alloc"
+            p<-emptyPage pageSize True
+            --putStrLn "Success"
+            return p
         else do
+            --putStrLn "Read!"
             hSeek handle AbsoluteSeek (toInteger(pid*pageSize))
             page<-emptyPage pageSize False
             inspectPage (\ptr->do
@@ -150,11 +157,17 @@ module SlowQL.PageFS where
     --Now the page is mutable and everyone is happy.
     getPage :: DataFile->Int->IO Page
     getPage DataFile{file_handle=handle, cache=c} pid=do
+        --putStrLn ("Getting "++(show pid))
         page<-LRU.lookup pid c
-        if isJust page then let Just jp=page in return jp
+        if isJust page then
+            do
+                --putStrLn "Hit!"
+                let Just jp=page in return jp
         else do
             newpage<-readFilePage handle pid
+            --putStrLn "R"
             tryRemoveLast c handle
+            --putStrLn "R"
             LRU.insert pid newpage c
             return newpage
     writeBackAll' :: Bool->DataFile->IO()

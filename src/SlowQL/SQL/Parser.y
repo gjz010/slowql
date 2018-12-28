@@ -51,6 +51,8 @@ import Data.Maybe
     and {TokenAnd}
     foreign {TokenForeign}
     references {TokenReferences}
+    offset {TokenOffset}
+    limit {TokenLimit}
     '=' {TokenEq}
     '<>' {TokenNeq}
     '<=' {TokenLeq}
@@ -97,7 +99,10 @@ ShowDatabases  : show databases {ShowDatabases}
 ShowDatabase   : show database {ShowDatabase}
 ShowTables : show tables {ShowTables}
 DescribeTable  : desc IDENTIFIER   {DescribeTable $2}
-InsertStmt: insert into IDENTIFIER values '(' ValueList ')' {InsertStmt $3 $6}
+
+InsertStmt: insert into IDENTIFIER values  RecordList {InsertStmt $3 $5}
+RecordList : '(' ValueList ')' {[$2]}
+            | '(' ValueList ')' ',' RecordList {$2:$5}
 ValueList: Value {[$1]}
        |   Value ',' ValueList {$1:$3}
 Value: STRING {DT.ValChar (Just $ BC.pack $1)}
@@ -124,14 +129,19 @@ Op  : '=' {OpEq}
     | '>=' {OpGeq}
     | '<' {OpLt}
     | '>' {OpGt}
+
+SelectSuffix: limit INT {CLimit $2}
+            | offset INT {COffset $2}
+SelectSuffices: {- empty -} {[]}
+              | SelectSuffix SelectSuffices {$1:$2}
 ColumnList: Column {[$1]}
           | Column ',' ColumnList {$1:$3}
 IdtList: IDENTIFIER {[$1]}
        | IDENTIFIER ',' IdtList {$1:$3} 
-SelectStmt: select ColumnList from TableList WhereWhereClause {SelectStmt $2 $4 $5}
-          | select '*' from TableList WhereWhereClause {SelectAllStmt $4 $5}
-UpdateStmt: update IDENTIFIER set '(' SetClause ')' WhereClause {UpdateStmt $2 $5 $7}
-DeleteStmt: delete from IDENTIFIER WhereClause {DeleteStmt $3 $4}
+SelectStmt: select ColumnList from TableList WhereWhereClause SelectSuffices {SelectStmt $2 $4 $5 $6}
+          | select '*' from TableList WhereWhereClause SelectSuffices {SelectAllStmt $4 $5 $6}
+UpdateStmt: update IDENTIFIER set '(' SetClause ')' WhereWhereClause {UpdateStmt $2 $5 $7}
+DeleteStmt: delete from IDENTIFIER WhereWhereClause {DeleteStmt $3 $4}
 SetClause: Assignment {[$1]}
          | Assignment ',' SetClause {$1:$3}
 Assignment: IDENTIFIER '=' Value {($1, $3)}
@@ -151,6 +161,7 @@ data Token
     |TokenInt|TokenChar|TokenFloat|TokenDate|TokenPrimary|TokenKey|TokenNot|TokenNull
     |TokenTables|TokenInto|TokenValues|TokenSet|TokenIs|TokenDesc|TokenAsc|TokenAnd|TokenForeign|TokenReferences
     |TokenDot|TokenEq|TokenNeq|TokenLeq|TokenGeq|TokenLt|TokenGt|TokenStar
+    |TokenOrder|TokenBy|TokenLimit|TokenOffset
     deriving(Show)
 data Op=OpEq|OpNeq|OpLeq|OpGeq|OpLt|OpGt deriving (Show)
 data Column=LocalCol String|ForeignCol String String deriving (Show)
@@ -173,16 +184,21 @@ data SQLStatement
     | UseDatabase String
     | ShowDatabases
     | ShowDatabase
-    | SelectStmt [Column] [String] WhereClause
-    | SelectAllStmt [String] WhereClause
+    | SelectStmt [Column] [String] WhereClause [SelectSuffix]
+    | SelectAllStmt [String] WhereClause [SelectSuffix]
     | UpdateStmt String [(String, DT.TValue)] WhereClause
     | DeleteStmt String WhereClause
-    | InsertStmt String [DT.TValue]
+    | InsertStmt String [[DT.TValue]]
     | CreateIndex String [String]
     | DropIndex String String
     | ShowTables
     | DescribeTable String
     deriving (Show)
+
+data SelectSuffix
+    = CLimit Int
+    | COffset Int
+    | COrderBy [Column] Bool deriving (Show)
 
 tokenize :: String->[Token]
 tokenize []=[]
@@ -195,6 +211,7 @@ tokenize (';':cs)=TokenSemicolon:tokenize cs
 tokenize ('(':cs)=TokenOB:tokenize cs
 tokenize (')':cs)=TokenCB:tokenize cs
 tokenize ('\'':cs)=let (a, b)=span (/='\'') cs in (TokenString a):tokenize (tail b)
+tokenize ('`':cs)=let (a, b)=span (/='`') cs in (TokenIdentifier a):tokenize (tail b)
 tokenize ('=':cs)=TokenEq:tokenize cs
 tokenize ('<':'=':cs)=TokenLeq:tokenize cs
 tokenize ('>':'=':cs)=TokenGeq:tokenize cs
@@ -205,7 +222,7 @@ tokenize ('.':cs)=TokenDot:tokenize cs
 tokenize ('*':cs)=TokenStar:tokenize cs
 readVar cs=
     let (token, rest)=span isText cs
-        sym=case token of
+        sym=case map toLower token of
                 "database"->TokenDatabase
                 "databases"->TokenDatabases
                 "table"->TokenTable
@@ -230,6 +247,7 @@ readVar cs=
                 "is"->TokenIs
                 "int"->TokenInt
                 "varchar"->TokenChar
+                "char"->TokenChar
                 "desc"->TokenDesc
                 "asc"->TokenAsc
                 "index"->TokenIndex
@@ -238,10 +256,11 @@ readVar cs=
                 "float"->TokenFloat
                 "foreign"->TokenForeign
                 "references"->TokenReferences
-                
-                
-
-                otherwise->TokenIdentifier token
+                "order"->TokenOrder
+                "by"->TokenBy
+                "limit"->TokenLimit
+                "offset"->TokenOffset
+                otherwise->TokenIdentifier $ map toLower token
     in sym:tokenize rest
 readNum cs=TokenInteger (read num):tokenize rest
         where (num, rest)=span isDigit cs
