@@ -14,9 +14,9 @@ module SlowQL.Test.LinearTableTest where
         table<-T.open filename
         print table
         T.printStats table
-        T.insert "YajueSenpai" table
-        T.insert "11451481893" table
-        T.insert "DeepFantasy" table
+        T.insert "YajueSenpai" table T.unitaryId
+        T.insert "11451481893" table T.unitaryId
+        T.insert "DeepFantasy" table T.unitaryId
         T.printStats table
         let take3=(T.enumerate table).| takeC 3
         l<-runConduit $ (CB.cartesian take3 take3 ) .| filterC (\(a,b)->a/=b) .|sinkList

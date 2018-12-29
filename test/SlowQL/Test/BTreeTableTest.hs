@@ -11,10 +11,10 @@ module SlowQL.Test.BTreeTableTest where
     test=do
         putStrLn "Test SlowQL.Test.BTreeTableTest"
         putStrLn "Creating BTreeTable"
-        BT.initialize "test-btree.tmp" 10 5
+        BT.initialize "test-btree.tmp" 10 10
         bt<-BT.open "test-btree.tmp"
         BT.printBT bt
-        let fext=BS.take 5
+        let fext=BS.take 10
         let fcmp=compare
         let hint=(fext, fcmp)
         BT.insert bt hint "YajueSenpi"
@@ -26,10 +26,31 @@ module SlowQL.Test.BTreeTableTest where
         BT.close bt
         bt<-BT.open "test-btree.tmp"
         let names2=map (BC.pack .(flip (++) "SENPI"). show) [15001..16000]
-        mapM_ (BT.insert bt hint) names2
+        
         --ret<-runConduit $ BT.enumerateRange bt hint (Just ("15000",True)) (Just ("16000",False)) .| sinkList
         --print ret
-        ret<-runConduit $ BT.renumerateRange bt hint (Just ("15000",True)) (Just ("16000",False)) .| sinkList
+        mapM_ (BT.insert bt hint) names2
+        mapM_ (BT.delete bt hint) names2
+        mapM_ (BT.insert bt hint) names2
+        mapM_ (BT.delete bt hint) names2
+        mapM_ (BT.insert bt hint) names2
+        mapM_ (BT.delete bt hint) names2
+        mapM_ (BT.insert bt hint) names2
+        mapM_ (BT.delete bt hint) names2
+        mapM_ (BT.insert bt hint) names2
+        mapM_ (BT.delete bt hint) names2
+        mapM_ (BT.insert bt hint) names2
+        mapM_ (BT.delete bt hint) names2
+        mapM_ (BT.insert bt hint) names2
+        mapM_ (BT.delete bt hint) names2
+        mapM_ (BT.insert bt hint) names2
+        mapM_ (BT.delete bt hint) names2
+        mapM_ (BT.insert bt hint) names2
+        mapM_ (BT.delete bt hint) names2
+        mapM_ (BT.insert bt hint) names2
+        mapM_ (BT.delete bt hint) names2
+        mapM_ (BT.insert bt hint) names2
+        ret<-runConduit $ BT.enumerateRange bt hint (Just ("15000YAJUU",True)) (Just ("16000SENPI",True)) .| sinkList
         print ret
         BT.printBT bt
         

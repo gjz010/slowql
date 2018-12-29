@@ -40,6 +40,7 @@ dependencies:
 - array
 - vector
 - uuid
+- mwc-random
 library:
   source-dirs: src
 
@@ -49,8 +50,6 @@ executables:
     source-dirs:         app
     ghc-options:
     - -O2
-    - -g
-    - -debug
     dependencies:
     - slowql
 
@@ -60,7 +59,5 @@ tests:
     source-dirs:         test
     ghc-options:
     - -O2
-    - -g
-    - -debug
     dependencies:
     - slowql

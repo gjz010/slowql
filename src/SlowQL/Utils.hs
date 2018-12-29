@@ -14,7 +14,10 @@ module SlowQL.Utils where
     import Data.Time
     import Data.Binary.Get
     import Data.UUID.V4
+    import Control.Monad
+    import Data.UUID.V5
     import qualified Data.UUID as UUID
+    import qualified System.Random.MWC as MWC
     hasDuplicates :: (Ord a) => [a] -> Bool
     hasDuplicates list = length list /= length set
                     where set = Set.fromList list
@@ -81,7 +84,13 @@ module SlowQL.Utils where
     generateUUID=do
         uuid<-nextRandom
         return $ BC.pack $ UUID.toString uuid --we use ascii-form here to make it readable
-
+    generateBulkUUID :: Int->IO [BS.ByteString]
+    generateBulkUUID count=do
+            seed<-nextRandom
+            r<-MWC.createSystemRandom
+            let gen=replicateM 64 $ (MWC.uniform r :: IO Word8)
+            seeds<-replicateM count $ gen
+            return $ map (BC.pack . UUID.toString . generateNamed seed) $ seeds
     uuidNegInfinity :: BS.ByteString
     uuidNegInfinity=BS.pack $ replicate 40 (fromIntegral 0)
     uuidPosInfinity :: BS.ByteString

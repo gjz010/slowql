@@ -36,6 +36,15 @@ module SlowQL.Data.LinearTable where
     tagEndOfList=0xffffffff
     tagNotEmpty :: Int
     tagNotEmpty=0xfffffffe
+
+    type BinaryHook=(Int->ByteString->ByteString->IO ())
+    type UnitaryHook=((ByteString, Int)->IO ())
+    
+    unitaryId :: UnitaryHook
+    unitaryId _=return ()
+    binaryId :: BinaryHook
+    binaryId _ _ _=return ()
+
     totalItems :: LinearTable->IO Int
     totalItems table=do
         s<-readIORef $ stat table
@@ -121,8 +130,8 @@ module SlowQL.Data.LinearTable where
         mapM_ (flip task $ recordsPerPage table) [0..full_pages-1] 
         if last_page_size>0 then task full_pages last_page_size else return ()
 
-    update :: Updater->LinearTable->IO Int
-    update f table=do
+    update :: Updater->LinearTable->(Int->ByteString->ByteString->IO ())->IO Int
+    update f table hook=do
         counter<-newIORef 0
         let task pn ni=do
                             
@@ -135,6 +144,7 @@ module SlowQL.Data.LinearTable where
                                         nbs<-f bs
                                         if isJust nbs then do
                                             let Just jnbs=nbs
+                                            hook (pn*recordsPerPage table+i) bs jnbs
                                             modifyIORef' counter (+1)
                                             FS.writeBSOff (i*(record_size+4)+4) jnbs p
                                         else return ()
@@ -143,8 +153,8 @@ module SlowQL.Data.LinearTable where
                             FS.modifyPage total_op page
         iteratePages task table
         readIORef counter
-    delete :: Deleter->LinearTable->IO Int
-    delete f table=do
+    delete :: Deleter->LinearTable->((ByteString, Int)->IO ())->IO Int
+    delete f table hook=do
         counter<-newIORef 0
         let task pn ni=do
                             
@@ -162,14 +172,17 @@ module SlowQL.Data.LinearTable where
                                             pokeElemOff (castPtr (p `plusPtr` (i*(record_size+4))) :: Ptr Word32) 0 (fromIntegral stack_top)
                                             let remove_index=pn*(recordsPerPage table)+i
                                             writeIORef (stat table) (LinearTableStat (currentItems st) (Just remove_index))
+                                            hook (bs, remove_index)
                                         else return ()
                                     else return ()
                             let total_op p=mapM_ (`trydelete` p) [0..ni-1]
                             FS.modifyPage total_op page
         iteratePages task table
         readIORef counter
-    insert :: ByteString->LinearTable->IO Int
-    insert=writeToEmptyPos
+    insert :: ByteString->LinearTable->((ByteString, Int)->IO ())->IO ()
+    insert bs table hook=do
+        idx<-writeToEmptyPos bs table
+        hook (bs, idx)
 
     enumerate :: LinearTable->ConduitT () ByteString IO ()
     enumerate lt=enumerateWithIdx lt .| (mapC snd)
