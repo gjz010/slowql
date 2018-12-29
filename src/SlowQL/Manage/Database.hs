@@ -227,8 +227,8 @@ module SlowQL.Manage.Database where
     ensureUniqueMaybe _=Nothing
     selectFrom :: P.SQLStatement->Database->IO ()
     selectFrom stmt db=do
-        (expr, related_tables)<-compileSelect stmt db
-        runConduit ((R.evaluate expr related_tables ).|printC)
+        (expr, related_tables, related_indices)<-compileSelect stmt db
+        runConduit ((R.evaluate expr related_tables related_indices).|printC)
 
     drop :: String->IO(Maybe String)
     drop db=do
@@ -281,11 +281,11 @@ module SlowQL.Manage.Database where
     applyOp P.OpLt=(<)
     applyOp P.OpGt=(>)
     tryIndex :: Database->T.Table->Int->IO (Maybe I.Index)
-    tryIndex db table cid=
-        tname<-T.name $ T.def table
+    tryIndex db table cid=do
+        let tname=T.name $ T.def table
         li<-readIORef $ live_indices db
-        return $ lookup (tname, cid) li
-    compileSelect :: P.SQLStatement->Database->IO (R.RelExpr, Arr.Array Int T.Table)
+        return $ Map.lookup (tname, cid) li
+    compileSelect :: P.SQLStatement->Database->IO (R.RelExpr, Arr.Array Int T.Table, Arr.Array Int I.Index)
     compileSelect stmt db=do
         df<-readIORef $ def db
         let get_tables (P.SelectStmt _ a b c)=(a,b,c)
@@ -317,19 +317,19 @@ module SlowQL.Manage.Database where
                         then [R.SingleTableWhereClause t1 (\r->applyOp op ((DT.fields r) ! ci1) ((DT.fields r) ! ci2)) (\r->applyOp op ((DT.fields r) ! i1) ((DT.fields r) ! i2))]
                         else let functor=(\r->applyOp op ((DT.fields r) ! i1) ((DT.fields r) ! i2)) in if op==P.OpEq then [(if i1<i2 then R.ForeignReference t2 ci2 i1 functor else R.ForeignReference t1 ci1 i2 functor)] else [R.GeneralWhereClause functor]
                     else [R.WhereNotCompatiblePP t1 ci1 t2 ci2]
-            expand_where (P.WhereIsNull column isnull)=let (t,c,g, p)=translate column in let nullvalue=DT.createNull p in expand_where (P.WhereOp column (if isnull then P.OpEq else P.OpNeq) (P.ExprV nullvalue))
+            expand_where (P.WhereIsNull column isnull)=let (t,c,g, p)=translate column in let nullvalue=DT.nullValue p in expand_where (P.WhereOp column (if isnull then P.OpEq else P.OpNeq) (P.ExprV nullvalue))
             expand_where (P.WhereAnd a b)=(expand_where a)++(expand_where b)
         
         let compiled_whereclause=force $ expand_where whereclause
         mapM_ R.assertCompileError compiled_whereclause
-        global_constraints<-newIORef $ map (\(GeneralWhereClause fallback)->fallback) $ filter R.isGeneralWC compiled_whereclause
-        addFB x=modifyIORef' global_constraints (\l->x:l)
+        global_constraints<-newIORef $ map (\(R.GeneralWhereClause fallback)->fallback) $ filter R.isGeneralWC compiled_whereclause
+        let addFB x=modifyIORef' global_constraints (\l->x:l)
         used_indices<-newIORef $ []
-        addIdx x=do
-            l<-readIORef used_indices
-            let ll=length l
-            modifyIORef' used_indices (\l->x:l)
-            return ll
+        let addIdx x=do
+                l<-readIORef used_indices
+                let ll=length l
+                modifyIORef' used_indices (\l->x:l)
+                return ll
         
         let add_column acc tid=do
                 --if there is one and only one foreign reference, use the reference and use single table constraints as global constraints.
@@ -339,14 +339,14 @@ module SlowQL.Manage.Database where
                 let f1_result=filter filter_foreign_reference compiled_whereclause
                 
                 let optimize_singleclause=do
-                    let is_our_stc (SingleTableWhereClause table_id _ _)=table_id==tid
-                        is_our_stc (OptimizableSingleTableWhereClause table_id _ _ _ _ _)=table_id==tid
-                        is_our_stc _=False
-                    f3_result=filter is_our_stc compiled_whereclause
-                    let apply_filter expr (SingleTableWhereClause _ sf _)=R.RelFilter sf expr
-                        apply_filter expr (OptimizableSingleTableWhereClause _ _ _ _ sf _)=R.RelFilter sf expr
-                    let expr=foldl' apply_filter (R.RelEnumAll tid)
-                    return $ R.RelCard acc expr
+                        let is_our_stc (R.SingleTableWhereClause table_id _ _)=table_id==tid
+                            is_our_stc (R.OptimizableSingleTableWhereClause table_id _ _ _ _ _)=table_id==tid
+                            is_our_stc _=False
+                        let f3_result=filter is_our_stc compiled_whereclause
+                        let apply_filter expr (R.SingleTableWhereClause _ sf _)=R.RelFilter (R.RecordPred sf) expr
+                            apply_filter expr (R.OptimizableSingleTableWhereClause _ _ _ _ sf _)=R.RelFilter (R.RecordPred sf) expr
+                        let expr=foldl' apply_filter (R.RelEnumAll tid) f3_result
+                        return $ if R.isRelNothing acc then expr else (R.RelCart acc expr)
                 if (length f1_result==1)
                     then do
                         let [(R.ForeignReference table_id column_id referto fallback)]=f1_result
@@ -355,9 +355,9 @@ module SlowQL.Manage.Database where
                             then do
                                     let (Just index)=try_index
                                     placeholder<-addIdx index
-                                    let expr=RelCartForeign acc placeholder referto column_id
-                                    let single_column_constraints x=R.isSTC x || R.isOptStc x
-                                    f2_result=map R.fallback $ filter single_column_constraints compiled_whereclause
+                                    let expr=R.RelCartForeign acc placeholder referto
+                                    let single_column_constraints x=R.isSTC x || R.isOptSTC x
+                                    let f2_result=map R.fallback $ filter single_column_constraints compiled_whereclause
                                     mapM_ (addFB) f2_result
                                     return expr
                             else do
@@ -370,8 +370,12 @@ module SlowQL.Manage.Database where
                 --else combine all single-table clauses together.
                 --cart this and that together.
         
-
+        folded_expr<-foldM add_column R.RelNothing [0..(length used_tables_list-1)]
+        gc_pred<-readIORef global_constraints
+        let apply_multitable expr pred  =R.RelFilter (R.RecordPred pred) expr
+        let full_expr=foldl' apply_multitable folded_expr gc_pred
         --let table_sources=DT.buildArray' map R.RelEnumAll [0..((length used_tables_list)-1)]
+        {-
         table_vec<-V.new (length used_tables_list) :: IO (V.IOVector R.RelExpr)
         mapM_ (uncurry $ V.write table_vec ) $ zip [0..] $ map R.RelEnumAll [0..((length used_tables_list)-1)]
 
@@ -385,6 +389,7 @@ module SlowQL.Manage.Database where
         let apply_multitable expr (R.GeneralWhereClause pred)  =R.RelFilter (R.RecordPred pred) expr
             apply_multitable expr _=expr
         let full_expr=foldl' apply_multitable folded_expr compiled_whereclause
+        -}
         --Expand projectors
         let names_of_all_columns=concat $ map (map (DT.name . DT.general) . Arr.elems . DT.domains . T.domains . T.def) used_tables_list
         let (removed_rids, _)=unzip $ filter (\(_, n)->n/=BC.pack "_rid") $ zip [0..] names_of_all_columns 
@@ -400,7 +405,8 @@ module SlowQL.Manage.Database where
         let query_plan=(flip (foldl' apply_limit) suffices) $ (flip (foldl' apply_offset) suffices)$ add_projector stmt full_expr
         evaluate $ force query_plan
         putStrLn ("Query plan: "++(show query_plan))
-        return (query_plan, DT.buildArray' used_tables_list)
+        used_indices_list<-readIORef used_indices
+        return (query_plan, DT.buildArray' used_tables_list, DT.buildArray' $ reverse used_indices_list)
     getIndex :: Database->(BS.ByteString, Int)->IO I.Index
     getIndex db p=do
         li<-readIORef $ live_indices db
@@ -433,20 +439,20 @@ module SlowQL.Manage.Database where
         let check_compatible=and $ zipWith (\v (_,_,_,p)->DT.compatiblePV p v) values columns
         assertIO check_compatible "Some column and value not compatible!"
         let expand_where P.WhereAny=[]
-            expand_where (P.WhereOp column op (P.ExprV val))=let (t,c,_, p)=translate column in if DT.compatiblePV p val then [R.SingleTableWhereClause t (\r->applyOp op ((DT.fields r) ! c) val)] else [R.WhereNotCompatiblePV t c]
+            expand_where (P.WhereOp column op (P.ExprV val))=let (t,c,_, p)=translate column in if DT.compatiblePV p val then [R.GeneralWhereClause (\r->applyOp op ((DT.fields r) ! c) val)] else [R.WhereNotCompatiblePV t c]
             expand_where (P.WhereOp c1 op (P.ExprC c2))=
                 let (t1, ci1, i1, p1)=translate c1
                     (t2, ci2, i2, p2)=translate c2
                 in if DT.compatiblePP p1 p2
                     then if t1==t2
-                        then [R.SingleTableWhereClause t1 (\r->applyOp op ((DT.fields r) ! ci1) ((DT.fields r) ! ci2))]
+                        then [R.GeneralWhereClause (\r->applyOp op ((DT.fields r) ! ci1) ((DT.fields r) ! ci2))]
                         else [R.GeneralWhereClause (\r->applyOp op ((DT.fields r) ! i1) ((DT.fields r) ! i2))]
                     else [R.WhereNotCompatiblePP t1 ci1 t2 ci2]
-            expand_where (P.WhereIsNull column isnull)=let (t, c, _, _)=translate column in [R.SingleTableWhereClause t (\r->(DT.isNull ((DT.fields r)!c))==isnull)]
+            expand_where (P.WhereIsNull column isnull)=let (t, c, _, _)=translate column in [R.GeneralWhereClause (\r->(DT.isNull ((DT.fields r)!c))==isnull)]
             expand_where (P.WhereAnd a b)=(expand_where a)++(expand_where b)
         let compiled_where=expand_where wc
         mapM_ R.assertCompileError compiled_where
-        let eval_where rc (R.SingleTableWhereClause _ pred)=pred rc
+        let eval_where rc (R.GeneralWhereClause pred)=pred rc
         --Do the real update work
         let replacement_tree=zipWith (\v (_, i, _, _)->(i, v)) values columns
         let checker rc=let pass w=eval_where rc w in foldr (&&) True (map pass compiled_where)
@@ -460,20 +466,20 @@ module SlowQL.Manage.Database where
         [tbl]<-getTablesByName [tblname] db
         let translate=(forceJust "Column missing!") .(translateColumn [T.def tbl] ) 
         let expand_where P.WhereAny=[]
-            expand_where (P.WhereOp column op (P.ExprV val))=let (t,c,_, p)=translate column in if DT.compatiblePV p val then [R.SingleTableWhereClause t (\r->applyOp op ((DT.fields r) ! c) val)] else [R.WhereNotCompatiblePV t c]
+            expand_where (P.WhereOp column op (P.ExprV val))=let (t,c,_, p)=translate column in if DT.compatiblePV p val then [R.GeneralWhereClause (\r->applyOp op ((DT.fields r) ! c) val)] else [R.WhereNotCompatiblePV t c]
             expand_where (P.WhereOp c1 op (P.ExprC c2))=
                 let (t1, ci1, i1, p1)=translate c1
                     (t2, ci2, i2, p2)=translate c2
                 in if DT.compatiblePP p1 p2
                     then if t1==t2
-                        then [R.SingleTableWhereClause t1 (\r->applyOp op ((DT.fields r) ! ci1) ((DT.fields r) ! ci2))]
+                        then [R.GeneralWhereClause (\r->applyOp op ((DT.fields r) ! ci1) ((DT.fields r) ! ci2))]
                         else [R.GeneralWhereClause (\r->applyOp op ((DT.fields r) ! i1) ((DT.fields r) ! i2))]
                     else [R.WhereNotCompatiblePP t1 ci1 t2 ci2]
-            expand_where (P.WhereIsNull column isnull)=let (t, c, _, _)=translate column in [R.SingleTableWhereClause t (\r->(DT.isNull ((DT.fields r)!c))==isnull)]
+            expand_where (P.WhereIsNull column isnull)=let (t, c, _, _)=translate column in [R.GeneralWhereClause (\r->(DT.isNull ((DT.fields r)!c))==isnull)]
             expand_where (P.WhereAnd a b)=(expand_where a)++(expand_where b)
         let compiled_where=expand_where wc
         mapM_ R.assertCompileError compiled_where
-        let eval_where rc (R.SingleTableWhereClause _ pred)=pred rc
+        let eval_where rc (R.GeneralWhereClause pred)=pred rc
         -- Do the real delete work
         let deleter rc=let pass w=eval_where rc w in foldr (&&) True (map pass compiled_where)
         deleted<-T.delete tbl deleter (deleteHook tbl db)

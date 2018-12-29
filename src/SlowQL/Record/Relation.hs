@@ -5,6 +5,7 @@ module SlowQL.Record.Relation where
     import SlowQL.Record.DataType as DT
     import Data.Array.IArray
     import Data.Conduit
+    import Data.Tuple
     import qualified SlowQL.Manage.Table as T
     --import qualified SlowQL.Manage.Index as I
     import qualified SlowQL.Conduit.Combinator as Comb
@@ -25,7 +26,9 @@ module SlowQL.Record.Relation where
                 | RelSkip Int RelExpr-- skip
                 | RelTake Int RelExpr-- take
                 | RelNothing
-                deriving (Show, Generic), Eq
+                deriving (Show, Generic)
+    isRelNothing RelNothing=True
+    isRelNothing _=False
     instance NFData RelExpr
     instance NFData RecordPred 
     instance Show RecordPred where
@@ -35,7 +38,7 @@ module SlowQL.Record.Relation where
     evaluate expr l1 l2=go expr
         where 
             go (RelEnumAll idx_table)=T.enumerateAll (l1!idx_table)
-            go (RelEnumRange idx_index l u=let index=(l2!idx_index) in I.enumerateRange index (fmap swap l) (fmap swap u)-- index_placeholder index_columns lower_bound upper_bound
+            go (RelEnumRange idx_index l u)=let index=(l2!idx_index) in I.enumerateRange index (fmap swap l) (fmap swap u)-- index_placeholder index_columns lower_bound upper_bound
             go (RelProjection list source)=(go source) .| (Comb.projection list)
             go (RelCartForeign source index_placeholder source_col )=
                 let lefthand=go source

@@ -167,7 +167,7 @@ data Token
     |TokenOrder|TokenBy|TokenLimit|TokenOffset
     |TokenFloatLit Float
     deriving(Show)
-data Op=OpEq|OpNeq|OpLeq|OpGeq|OpLt|OpGt deriving (Show)
+data Op=OpEq|OpNeq|OpLeq|OpGeq|OpLt|OpGt deriving (Show, Eq)
 data Column=LocalCol String|ForeignCol String String deriving (Show)
 data Expr=ExprV DT.TValue | ExprC Column deriving (Show)
 data WhereClause=WhereOp Column Op Expr|WhereIsNull Column Bool | WhereAnd WhereClause WhereClause | WhereAny deriving (Show)
