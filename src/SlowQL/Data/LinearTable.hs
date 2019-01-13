@@ -188,7 +188,7 @@ module SlowQL.Data.LinearTable where
     enumerate lt=enumerateWithIdx lt .| (mapC snd)
     enumerateWithIdx :: LinearTable->ConduitT () (Int, ByteString) IO ()
     enumerateWithIdx table=do
-        liftIO $ putStrLn "Table Begin!"
+        --liftIO $ putStrLn "Table Begin!"
         (full_pages, last_page_size)<-liftIO $ do
                 n<-totalItems table
                 let full_pages=n `div` (recordsPerPage table)

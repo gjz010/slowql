@@ -16,6 +16,23 @@ module SlowQL.Record.Relation where
     import Control.DeepSeq
     import qualified SlowQL.Manage.Index as I
     newtype RecordPred=RecordPred {getPred::DT.Record->Bool} deriving (Generic)
+    type Bound=(Maybe (Bool, DT.TValue), Maybe (Bool, DT.TValue))
+
+    intersect :: Bound->Bound->Bound
+    intersect (a1, a2) (b1, b2)=(lbound a1 b1, ubound a2 b2)
+            where
+                lbound Nothing r=r
+                lbound l Nothing=l
+                lbound (Just (l1, l2)) (Just (r1, r2))=case (compare l2 r2) of
+                        LT -> Just (r1, r2)
+                        EQ -> Just (l1&&r1, r2)
+                        GT -> Just (l1, l2)
+                ubound Nothing r=r
+                ubound l Nothing=l
+                ubound (Just (l1, l2)) (Just (r1, r2))=case (compare l2 r2) of
+                        LT -> Just (l1, l2)
+                        EQ -> Just (l1&&r1, r2)
+                        GT -> Just (r1, r2)
     data RelExpr= 
                  RelEnumAll Int --table_placeholder
                 | RelEnumRange Int (Maybe (Bool, DT.TValue)) (Maybe (Bool, DT.TValue)) -- index_placeholder lower_bound upper_bound
@@ -23,10 +40,29 @@ module SlowQL.Record.Relation where
                 | RelProjection [Int] RelExpr --columns expr
                 | RelCart RelExpr RelExpr -- expr1 expr2
                 | RelFilter RecordPred RelExpr 
+                | RelInterval RecordPred RelExpr Int Bound
                 | RelSkip Int RelExpr-- skip
                 | RelTake Int RelExpr-- take
                 | RelNothing
                 deriving (Show, Generic)
+    -- The merge randomly chooses a column with index to perform the query.
+    -- It would have better be a list of filters, or something fishy may happen.
+    mergeEnumRange :: Int->RelExpr->(Maybe Int, RelExpr)
+    mergeEnumRange index_placeholder expr=go Nothing expr
+                where
+                    isRange (RelEnumRange{}) = True
+                    isRange _ =False
+                    go (Just (i, (a, b))) (RelEnumAll _)=(Just i, RelEnumRange index_placeholder a b) -- apply range
+                    go (Nothing) (RelEnumAll x)=(Nothing, RelEnumAll x) --Do nothing.
+                    go i (RelFilter a b)=let (m, n)=go i b in (m, RelFilter a n)
+                    go Nothing (RelInterval a b i c )=let (r1, r2)=go (Just (i, c)) b
+                                                   in (r1,  r2)
+                    go (Just (i',c')) (RelInterval a b i c)=if i'==i 
+                                                            then
+                                                                let new_bound=intersect c c'
+                                                                    (r1, r2)=go (Just (i, new_bound)) b
+                                                                in (r1,  r2)
+                                                            else let (m, n)=go (Just (i', c')) b in (m, RelFilter a n)
     isRelNothing RelNothing=True
     isRelNothing _=False
     instance NFData RelExpr
@@ -57,6 +93,11 @@ module SlowQL.Record.Relation where
             |   WhereNotCompatiblePV Int Int --Throws an error 
             |   OptimizableSingleTableWhereClause Int Int (Maybe (Bool, DT.TValue)) (Maybe (Bool, DT.TValue)) (DT.Record->Bool) (DT.Record->Bool)--Lead to optimization into RelEnumRange
             deriving (Generic)
+    instance Show CompiledWhereClause where
+        show (SingleTableWhereClause a b c)=show ("SingleTableWhereClause", a)
+        show (GeneralWhereClause _)=show ("GeneralWhereClause")
+        show (ForeignReference a b c _)=show ("ForeignReference", a, b, c)
+        show (OptimizableSingleTableWhereClause a b c d _ _)=show ("OptimizableSingleTableWhereClause", a, b, c, d)
     isForeignRef ForeignReference{}=True
     isForeignRef _=False
     isOptSTC OptimizableSingleTableWhereClause{}=True

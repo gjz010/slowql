@@ -64,7 +64,7 @@ module SlowQL.Utils where
     assertIO True _ = return ()
 
     parseDate :: String->Maybe Day
-    parseDate=parseTimeM True defaultTimeLocale "%Y/%m/%d"
+    parseDate=parseTimeM True defaultTimeLocale "%Y-%m-%d"
     parseDateBS :: BS.ByteString->Maybe Day
     parseDateBS=parseDate . BC.unpack
     getDate :: Get Day

@@ -74,13 +74,15 @@ module SlowQL.Manage.Index where
         name<-DT.readString
         target<-getWord32le
         return $ IndexDef name $ fromIntegral target
-    
+    showLeft :: (Show a)=>Either a b->String
+    showLeft (Left a)=show a
+    showLeft (Right b)="[Right]"
     resolveBound :: DT.TParam->Bool->Maybe (DT.TValue, Bool)->Maybe (BS.ByteString, Bool)
     resolveBound param lower bound=do
         (val, inclusive)<-bound
         let use_pos_infinity=(lower && (not inclusive)) || ((not lower) && inclusive)
         let put=do
-                let Right p=DT.writeField param val
+                let Right p= DT.writeField param val
                 let Right q=DT.writeField DT.ridParam $ DT.ValChar $ Just $ if use_pos_infinity then uuidPosInfinity else uuidNegInfinity
                 p
                 q

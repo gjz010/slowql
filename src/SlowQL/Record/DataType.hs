@@ -44,7 +44,23 @@ module SlowQL.Record.DataType where
         ValChar a == ValChar b = a==b
         ValInt a == ValInt b = a==b
         ValFloat a == ValFloat b = a==b
+        ValFloat (Nothing) == ValInt (Nothing) = True
+        ValInt (Nothing) == ValFloat (Nothing) = True
+        ValFloat (Just a)== ValInt (Just b)=a==(realToFrac b)
+        ValInt (Just b) == ValFloat (Just a)=a==(realToFrac b)
+        ValFloat Nothing == ValInt (Just _)=False
+        ValInt (Just _)== ValFloat Nothing=False
+        ValInt (Nothing)==ValFloat (Just _)=False
+        ValFloat (Just _)==ValInt (Nothing)=False 
         ValDate a == ValDate b = a==b
+        ValDate Nothing==ValChar Nothing=True
+        ValChar Nothing == ValDate Nothing=True
+        ValDate Nothing==ValChar (Just _)=False
+        ValChar (Just _)==ValDate Nothing=False
+        ValDate (Just _)==ValChar Nothing=False
+        ValChar Nothing == ValDate (Just _)=False
+        ValChar (Just a)==ValDate (Just b)=let Just str=parseDateBS a in str==b
+        ValDate (Just b)==ValChar (Just a)=let Just str=parseDateBS a in str==b
         ValBool a == ValBool b = a==b
         ValNegInfty == ValNegInfty = True
         ValPosInfty == ValPosInfty = True
@@ -87,7 +103,8 @@ module SlowQL.Record.DataType where
     compatiblePV TDateParam{general=TGeneralParam {nullable=True}} ValNull=True
     compatiblePV TBoolParam{general=TGeneralParam {nullable=True}} ValNull=True
     --Backdoor for parsing date
-    compatiblePV TDateParam{general=TGeneralParam {nullable=True}} (ValChar (Just date))=isJust $ parseDateBS date
+    compatiblePV TDateParam{} (ValChar (Just date))=isJust $ parseDateBS date
+    compatiblePV TFloatParam{} (ValInt _)=True
     compatiblePV _ _=False
     isNull :: TValue->Bool
     isNull (ValChar a)=isNothing a
@@ -95,6 +112,7 @@ module SlowQL.Record.DataType where
     isNull (ValFloat a)=isNothing a
     isNull (ValDate a)=isNothing a
     isNull (ValBool a)=isNothing a
+    isNull (ValNull)=True
     newtype Domains=Domains {domains :: Array Int TParam} deriving (Show)
     newtype Record=Record {fields :: Array Int TValue} deriving (Show, Eq, Ord)
 
@@ -229,6 +247,9 @@ module SlowQL.Record.DataType where
     doWriteField TFloatParam{} (ValFloat (Just val) ) throw=Right $ do
         putWord8 0
         putWord32le $ floatToWord val
+    doWriteField TFloatParam{} (ValInt (Just val)) throw=Right $ do
+        putWord8 0
+        putWord32le $ floatToWord $realToFrac val
     doWriteField TDateParam{} (ValDate (Just date) ) throw=Right $ do
         putWord8 0
         putDate date

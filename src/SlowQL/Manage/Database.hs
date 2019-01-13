@@ -285,6 +285,7 @@ module SlowQL.Manage.Database where
         let tname=T.name $ T.def table
         li<-readIORef $ live_indices db
         return $ Map.lookup (tname, cid) li
+
     compileSelect :: P.SQLStatement->Database->IO (R.RelExpr, Arr.Array Int T.Table, Arr.Array Int I.Index)
     compileSelect stmt db=do
         df<-readIORef $ def db
@@ -322,6 +323,7 @@ module SlowQL.Manage.Database where
         
         let compiled_whereclause=force $ expand_where whereclause
         mapM_ R.assertCompileError compiled_whereclause
+        print compiled_whereclause
         global_constraints<-newIORef $ map (\(R.GeneralWhereClause fallback)->fallback) $ filter R.isGeneralWC compiled_whereclause
         let addFB x=modifyIORef' global_constraints (\l->x:l)
         used_indices<-newIORef $ []
@@ -337,16 +339,32 @@ module SlowQL.Manage.Database where
                 let filter_foreign_reference (R.ForeignReference table_id column_id referto fallback)=table_id==tid
                     filter_foreign_reference _ =False
                 let f1_result=filter filter_foreign_reference compiled_whereclause
-                
+                let is_our_stc (R.SingleTableWhereClause table_id _ _)=table_id==tid
+                    is_our_stc (R.OptimizableSingleTableWhereClause table_id _ _ _ _ _)=table_id==tid
+                    is_our_stc _=False
                 let optimize_singleclause=do
-                        let is_our_stc (R.SingleTableWhereClause table_id _ _)=table_id==tid
-                            is_our_stc (R.OptimizableSingleTableWhereClause table_id _ _ _ _ _)=table_id==tid
-                            is_our_stc _=False
+                        --Get all available indices
+                        let table=(array_tables!tid)
+                        let tname=T.name $ T.def table
+                        li<-readIORef $ live_indices db
+                        
+
                         let f3_result=filter is_our_stc compiled_whereclause
                         let apply_filter expr (R.SingleTableWhereClause _ sf _)=R.RelFilter (R.RecordPred sf) expr
-                            apply_filter expr (R.OptimizableSingleTableWhereClause _ _ _ _ sf _)=R.RelFilter (R.RecordPred sf) expr
+                            apply_filter expr (R.OptimizableSingleTableWhereClause _ column_id l u sf _)=
+                                    if (Map.member (tname ,column_id) li) 
+                                        then R.RelInterval (R.RecordPred sf) expr column_id (l, u) 
+                                        else R.RelFilter (R.RecordPred sf) expr
                         let expr=foldl' apply_filter (R.RelEnumAll tid) f3_result
-                        return $ if R.isRelNothing acc then expr else (R.RelCart acc expr)
+                        cui<-readIORef used_indices
+                        let (used_index, merged_expr)=R.mergeEnumRange (length cui) expr
+                        when (isJust used_index) (let (Just juindex)=used_index
+                                                      (Just uindex)=Map.lookup (tname, juindex) li 
+                                                  in do
+                                                        addIdx uindex
+                                                        return ()
+                                                )
+                        return $  if R.isRelNothing acc then merged_expr else (R.RelCart acc merged_expr)
                 if (length f1_result==1)
                     then do
                         let [(R.ForeignReference table_id column_id referto fallback)]=f1_result
@@ -356,7 +374,7 @@ module SlowQL.Manage.Database where
                                     let (Just index)=try_index
                                     placeholder<-addIdx index
                                     let expr=R.RelCartForeign acc placeholder referto
-                                    let single_column_constraints x=R.isSTC x || R.isOptSTC x
+                                    let single_column_constraints x=is_our_stc x
                                     let f2_result=map R.fallback $ filter single_column_constraints compiled_whereclause
                                     mapM_ (addFB) f2_result
                                     return expr
@@ -373,7 +391,7 @@ module SlowQL.Manage.Database where
         folded_expr<-foldM add_column R.RelNothing [0..(length used_tables_list-1)]
         gc_pred<-readIORef global_constraints
         let apply_multitable expr pred  =R.RelFilter (R.RecordPred pred) expr
-        let full_expr=foldl' apply_multitable folded_expr gc_pred
+        let full_expr= foldl' apply_multitable folded_expr gc_pred
         --let table_sources=DT.buildArray' map R.RelEnumAll [0..((length used_tables_list)-1)]
         {-
         table_vec<-V.new (length used_tables_list) :: IO (V.IOVector R.RelExpr)
@@ -419,6 +437,8 @@ module SlowQL.Manage.Database where
         let tvalues=zipWith (:) (map (DT.ValChar . Just ) uuids) orig_tvalues
         let op_insert recd=do
                 when ((T.primary $ T.def tbl )/=0) $ do
+                        let notnull_test=not $ DT.isNull $ head $ (Data.List.drop (T.primary $ T.def tbl) recd)
+                        assertIO notnull_test "Primary key not null violation!"
                         primary_index<-getIndex db (T.name $ T.def tbl, T.primary $ T.def tbl)
                         unique_test<-I.checkUnique primary_index $ head $ Data.List.drop (T.primary $ T.def tbl) recd
                         assertIO unique_test "Primary key unique violation!"

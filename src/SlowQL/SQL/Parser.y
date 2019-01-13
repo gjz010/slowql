@@ -204,6 +204,14 @@ data SelectSuffix
     | COffset Int
     | COrderBy [Column] Bool deriving (Show)
 
+
+escapedSpan :: String->(String, String)
+escapedSpan str=go False str
+            where
+                go False ('\'':s)=("", ('\''):s)
+                go False ('\\':s)=go True s
+                go False (x:xs)=let (a, b)=go False xs in (x:a, b)
+                go True (x:xs)=let (a, b)=go False xs in (x:a, b)
 tokenize :: String->[Token]
 tokenize []=[]
 tokenize (c:cs)
@@ -215,7 +223,8 @@ tokenize (',':cs)=TokenComma:tokenize cs
 tokenize (';':cs)=TokenSemicolon:tokenize cs
 tokenize ('(':cs)=TokenOB:tokenize cs
 tokenize (')':cs)=TokenCB:tokenize cs
-tokenize ('\'':cs)=let (a, b)=span (/='\'') cs in (TokenString a):tokenize (tail b)
+
+tokenize ('\'':cs)=let (a, b)=escapedSpan cs in (TokenString a):tokenize (tail b)
 tokenize ('`':cs)=let (a, b)=span (/='`') cs in (TokenIdentifier a):tokenize (tail b)
 tokenize ('=':cs)=TokenEq:tokenize cs
 tokenize ('<':'=':cs)=TokenLeq:tokenize cs

@@ -2,3 +2,6 @@
 slowql.cabal
 *~
 table.tbl
+*.sql
+slowql-data/
+output.txt
